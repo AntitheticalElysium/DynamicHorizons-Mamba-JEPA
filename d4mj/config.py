@@ -77,7 +77,9 @@ class Config:
     horizon_candidates: tuple[int, ...] = (4, 8, 16, 32)
     # How many genuinely generated states `_direct_loss` trains. Deployment must not
     # imagine past it, or both transition and head inputs leave their trained
-    # distribution -- S68 caps the direct arm's horizon here.
+    # distribution -- S68 caps the direct arm's horizon here. Raising it is what a
+    # longer actor horizon costs: the rollout eats the last `direct_rollout` blocks of
+    # every row, so `sequence` bounds it and must be raised alongside.
     direct_rollout: int = 2
 
     # Evaluation (S52). The native Craftax horizon, not the collector's 2500 cap.
@@ -143,6 +145,11 @@ class Config:
         assert self.k_max >= 8 and self.k_max & (self.k_max - 1) == 0
         assert self.rungs <= self.k_max
         assert self.tau_ctx_index < self.k_max
+        # The rollout needs one block to start from and one per generated state. Short
+        # batches are the binding schedule, so this is checked against `sequence`, not
+        # `sequence_long` -- otherwise three rows in four would train teacher forcing
+        # alone and the configured depth would be silently fictional.
+        assert self.direct_rollout < self.sequence
         assert self.dynamics_context == 3 * self.sequence
         assert self.sequence_long == 4 * self.sequence
         assert self.sequence_long > self.dynamics_context
