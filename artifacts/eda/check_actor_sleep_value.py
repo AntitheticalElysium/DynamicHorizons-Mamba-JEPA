@@ -131,6 +131,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--arm", required=True, choices=("attention", "mamba"))
     parser.add_argument("--tag", default="_10k")
+    # The oracle actor is stored as a bare state dict inside its progress file, not as a
+    # d4mj checkpoint, so it is loaded by path rather than through the arm layout.
+    parser.add_argument("--heads", type=Path, default=None)
+    parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--seed-base", type=int, default=30_000)
     parser.add_argument("--episodes", type=int, default=64)
     parser.add_argument("--branch-steps", type=int, default=300)
@@ -147,8 +151,19 @@ def main() -> None:
     load(HERE / f"v2_phase2_{args.arm}" / "phase2_final.pt", saved,
          part0=world, part1=Heads(saved).to(DEVICE))
     actor = Heads(saved).to(DEVICE)
-    load(HERE / f"v2_phase3_{args.arm}{args.tag}" / "phase3_final.pt", config,
-         part0=World(saved).to(DEVICE), part1=actor)
+    if args.heads is not None:
+        # The progress file pickles its streams as `__main__.OracleStream`, so that name
+        # has to resolve here before the payload will unpickle.
+        import __main__
+        sys.path.insert(0, str(ROOT / "artifacts"))
+        from run_oracle_phase3 import OracleStream
+        __main__.OracleStream = OracleStream
+        stored_actor = torch.load(args.heads, weights_only=False)
+        actor.load_state_dict(stored_actor["heads"])
+        print(f"actor from {args.heads} at step {stored_actor['step']}", flush=True)
+    else:
+        load(HERE / f"v2_phase3_{args.arm}{args.tag}" / "phase3_final.pt", config,
+             part0=World(saved).to(DEVICE), part1=actor)
     world.eval(), encoder.eval(), actor.eval()
 
     rng = torch.Generator(device=DEVICE).manual_seed(2**19)
@@ -187,7 +202,8 @@ def main() -> None:
         rows.append(record)
         print(f"  seed {seed} step {index} prefers {record['preferred_action']}", flush=True)
 
-    out = HERE / f"v2_phase3_{args.arm}{args.tag}"
+    out = args.out or HERE / f"v2_phase3_{args.arm}{args.tag}"
+    out.mkdir(parents=True, exist_ok=True)
     (out / "actor_sleep_value.json").write_text(json.dumps(
         {"arm": args.arm, "tag": args.tag, "episodes": args.episodes,
          "branch_steps": args.branch_steps, "deployed": totals,
