@@ -41,9 +41,10 @@ Representation JEPA and dynamics JEPA are separate interventions:
 - `[JEPA-D]` predicts \(z_{t+1}\) from world history and action;
 - `[MAMBA]` carries the dynamics history used for that prediction.
 
-EMA and SIGReg belong only to Phase 1A (`[JEPA-R]`). Once the encoder is
-frozen, Phase 1B (`[JEPA-D]`) predicts fixed \(Z^*\) targets and uses neither
-mechanism.
+EMA-target JEPA and LeVJEPA belong only to Phase 1A (`[JEPA-R]`). SIGReg is
+LeVJEPA's regularizer, not a separate architecture. Once the encoder is frozen,
+Phase 1B (`[JEPA-D]`) predicts fixed \(Z^*\) targets and uses none of their
+training-only machinery.
 
 The encoder state, latent, and dynamics memory are not the same object:
 
@@ -124,9 +125,8 @@ PHASE 1A — REPRESENTATION
                          ┌─ D4 control: causal MAE encoder + decoder
 offline video ──────────┤
                          └─ JEPA-R: causal encoder
-                              ├─ independent masked-EMA arm (run first)
-                              └─ independent SIGReg arm (run second):
-                                   full symmetric recipe OR named ablation
+                              ├─ V-JEPA-style masked EMA-target arm
+                              └─ LeVJEPA-style global/local + SIGReg arm
                                       │
                                       ▼
                               frozen latent function Z*
@@ -199,9 +199,10 @@ real observation ─► Z* ─► update S_t^real ─► agent policy ─► env
 - **`[DESIGN]` Windows never cross an episode boundary**, so `evaluate` needs no
   reset mask and a reset stays a fresh state construction. `gates.alignment`
   asserts it; if it is ever relaxed, the signature changes.
-- **What JEPA changes — `[JEPA-R]` / `[JEPA-D]`:** The same episodes also yield
-  paired representation views and future-latent prediction targets; no new
-  external labels are introduced.
+- **What JEPA changes — `[JEPA-R]` / `[JEPA-D]`:** Phase 1A uses masked
+  prediction for EMA-JEPA-R or same-window global/local views for LeVJEPA-R.
+  Phase 1B separately forms action-conditioned future-\(Z^*\) targets. Neither
+  introduces external labels.
 - **What Mamba changes — `[MAMBA]`:** The data do not change; sequence batches
   must carry enough boundary and prefix information to initialize \(m_t\).
 - **`[D4]` Encoder prefix is *not* a Mamba concern.** §3.1 makes the tokenizer
@@ -233,10 +234,25 @@ real observation ─► Z* ─► update S_t^real ─► agent policy ─► env
   causal MAE tokenizer, \(L_\mathrm{MSE}+0.2L_\mathrm{LPIPS}\), `tanh`
   bottleneck, and encoder freeze before dynamics training.
 - **What JEPA changes — `[JEPA-R]`:** Replace the defining pixel objective, not
-  the latent interface. Test masked EMA prediction, then an independent SIGReg
-  arm declared as either full symmetric LeJEPA or an anti-collapse ablation.
-  Both are causal-D4 adaptations. Declare the exported copy; pinned V-JEPA 2-AC
-  supports the EMA target default. JEPA decoders train only after freeze.
+  the exported latent interface. EMA-JEPA-R uses an online encoder and predictor
+  against stopped targets from an EMA encoder. LeVJEPA-R uses one shared encoder,
+  one global and multiple local spatial/photometric views of the same temporal
+  interval, global/local MSE with gradients through both sides, and per-view
+  projector-space SIGReg with
+  \(\lambda=0.02\); it has no objective target, predictor, or stop-gradient. Its
+  Polyak encoder is evaluation-only. Both are causal-D4 adaptations, not exact
+  reproductions of their ViT backbones.
+- **`[DESIGN]` LeVJEPA readout:** Append a one-way readout stream after the
+  existing encoder slots and apply the loss to its final-time output through the
+  paper's disposable projector. Latent/image slots cannot read that stream, and
+  only the existing dense \(64\times16\) `tanh` latents enter \(Z^*\).
+- **`[DESIGN]` LeVJEPA dropping:** Sample the paper's uniform random
+  spatiotemporal keep-set, but preserve the encoder's fixed slot identities with
+  true-position masks. Padded dropped slots are unreadable and unscored. This is
+  semantically source-shaped but claims none of physical compaction's speedup;
+  a compact implementation must first prove parity and recurrent-state identity.
+  Token dropping, MAE replacement, and EMA masking are distinct mechanisms.
+  JEPA decoders train only after the encoder freezes.
 - **What Mamba changes — `[DESIGN]`:** Nothing in the primary thesis path.
   Keeping the encoder common isolates Mamba to dynamics; encoder-Mamba would
   be a separate experiment.
@@ -365,6 +381,12 @@ real observation ─► Z* ─► update S_t^real ─► agent policy ─► env
   pretraining setting, so flow-arm heads are deliberately trained on *noisy*
   representations across the sampled signal range — that is what makes them
   usable on generated latents at imagination time.
+- **`[D4]` / `[DESIGN]` Task-conditioned successor:** D4 feeds one-hot task
+  embeddings only to one-way agent tokens and conditions policy, sparse task
+  reward, and value on them. We derive candidate tasks from recorded Craftax
+  achievement events, admit only TRAIN-supported tasks, and freeze the prompt
+  sequence before evaluation. The active aggregate-reward agent remains a
+  reference; world prediction stays task-independent.
 - **What JEPA changes — `[JEPA-R]` / `[JEPA-D]`:** Keep \(Z^*\) frozen and
   continue its transition objective. Heads stay interface-compatible;
   generated-prefix robustness is gated without changing target semantics.
@@ -389,6 +411,14 @@ real observation ─► Z* ─► update S_t^real ─► agent policy ─► env
 - **What JEPA changes — `[JEPA-D]`:** Direct predicted latents replace flow
   samples in the thesis branch and are fed back recursively. The diagnostic
   decoder is not part of the control loop.
+- **`[DESIGN]` Targeted and interactive use:** A task-conditioned imagination
+  rollout holds one task \(q\) fixed while training its policy/value. A real
+  prompt scheduler advances only from recorded environment achievements.
+  Human or counterfactual play replaces the policy action source but calls the
+  same recursive `Advance`; pixels are optional decoder diagnostics, never state.
+  `[D4-UNKNOWN]` D4 does not state whether agent temporal memory resets when a
+  prompt changes; that choice freezes before the task stage and never resets
+  world streams.
 - **What Mamba changes — `[MAMBA]`:** The context scan initializes every
   temporal-layer state pair. Each rollout owns its branch of that state, and
   `Advance` and `Observe` obey the same state-branch, commit, and reset
@@ -432,7 +462,8 @@ real observation ─► Z* ─► update S_t^real ─► agent policy ─► env
   task-conditioned agent readout, and direct low-level policy actions.
 - **What JEPA changes — `[JEPA-R]` / `[JEPA-D]`:** Only the selected frozen
   deployment function \(Z^*\) is active on real observations; training-only
-  teachers, SIGReg, transition losses, and the decoder are absent. `[DESIGN]` One
+  predictors, projectors, SIGReg, representation views, transition losses, and
+  the decoder are absent. `[DESIGN]` One
   training-time mechanism does survive in the flow arm: it commits
   τ_ctx-corrupted real latents at deployment too, so executed control carries a
   third randomness source beyond environment seed and policy sampling, and the
@@ -454,21 +485,24 @@ real observation ─► Z* ─► update S_t^real ─► agent policy ─► env
    a whole episode yields three different latents under identical weights. Every
    cached target, JEPA target, diagnostic and deployment latent uses that one
    contract, and no target encoder may see frames unavailable to the deployed
-   encoder. \(Z^*\) is also defined at **MAE probability 0**: masking is a
-   Phase-1A training mechanism only, so no cached target, diagnostic or deployed
-   latent is ever produced under a random mask.
+   encoder. \(Z^*\) is defined with **all training corruption off**: MAE
+   replacement probability 0, EMA masking off, and LeVJEPA token dropping off.
+   It is dense and deterministic under the declared exported copy.
    Representation arms that differ in \(C^*\)'s geometry change objective *and*
    latent space at once; either hold geometry fixed across arms or label the
    comparison compound.
 2. `[D4]` Agent/task state reaches the world only through the selected action.
-   `[DESIGN]` Active single-task runs instantiate no task projection; agent
-   tokens remain task-independent readouts. Optional \(q_t\) is a dormant
-   compatibility interface for a declared multitask experiment.
+   `[DESIGN]` Active aggregate-task runs instantiate no task projection. The
+   successor conditions only agent-side policy, sparse reward, and value paths
+   on an eligible one-hot achievement task; world latents and transition outputs
+   must be invariant to \(q\). Continuation remains a physical, task-independent
+   prediction; its neutral readout is fixed before that stage.
 3. `[DESIGN]` Policy reads the pre-action state; reward/continuation describe
    its result. Candidate branches are read-only, one edge commits, and every
    actual reset clears \(e_t,m_t\) regardless of bootstrap.
-4. `[DESIGN]` EMA and SIGReg share a deployed interface; Mamba changes dynamics
-   time mixing only; JEPA-R, JEPA-D, and Mamba remain separately measurable.
+4. `[DESIGN]` EMA-JEPA-R and LeVJEPA-R share one deployed interface, while their
+   EMA copies have different roles; Mamba changes dynamics time mixing only;
+   JEPA-R, JEPA-D, and Mamba remain separately measurable.
    `[D4]` Concurrent losses use running-RMS normalization, with new composite
    objectives declared explicitly.
    Phase 3 additionally requires the trained reward/continuation model to pass
@@ -512,18 +546,24 @@ Before Mamba training, gate scan/step parity for outputs and states, selective
 reset parity, firewall counterfactuals, branch nonmutation, and actual recurrent
 carry in FP32 and deployment dtype.
 
-Stage B follows a preregistered branch. If `MAE-Direct-M` passes, compare it
-with `EMA-Direct-M`, then `SIGReg-Direct-M`, to estimate representation effects.
-If it fails, run the EMA viability pair `EMA-Direct-M` and `EMA-Flow-M`:
-comparison to `MAE-Flow-M` isolates JEPA-R under flow; a direct-only rescue is
-a JEPA-R × JEPA-D interaction. SIGReg follows only a passing EMA route with
-transition fixed.
+Stage B holds the valid Stage-A transition and Mamba mixer fixed and compares
+`MAE`, `EMA-JEPA-R`, and `LeVJEPA-R` exports. The two JEPA-R arms are independent;
+LeVJEPA is not gated on EMA. If Direct is invalid but Flow is valid, the clean
+representation comparison runs under Flow. Each export must first pass the
+dense-retention gate; otherwise no world-model result is interpreted.
 
-Stage C compares `JEPA-R-Direct-M` with `JEPA-R-Flow-M` in the dev-selected
-frozen representation whenever direct prediction is viable. It measures the
-transition-family system effect, not stochasticity alone. If direct never
-passes, the surviving model is JEPA-R + Flow + Mamba and makes no JEPA-D
+Stage C compares Direct and Flow within each retained frozen representation. It
+measures the transition-family system effect, not stochasticity alone. If Direct
+never passes, the surviving model is JEPA-R + Flow + Mamba and makes no JEPA-D
 success claim.
+
+Stage D adds D4-style achievement task conditioning only to the selected
+representation/transition/mixer. It keeps the aggregate agent as a reference,
+freezes the eligible task set and prompt from TRAIN support, and reports both
+per-task success and end-to-end prompt progress. Each imagined policy is gated
+against its own frozen task-conditioned BC prior; the aggregate agent is a
+separate system reference. Interactive imagination uses that same frozen world
+and cannot claim a horizon beyond trained recursive rollouts.
 
 Each stage passes source-fidelity, recurrence, parameter-match, and executed-
 control gates before the next stage. Matched arms share data/splits and
@@ -546,6 +586,9 @@ and that one disagree, that one wins and this one is stale.
 - SIGReg: `third_party/papers/2511.08544v2-lejepa.pdf`, Sections 4–5.1 and
   Algorithms 1–2;
   `rbalestr-lab/lejepa@c293d291ca87cd4fddee9d3fffe4e914c7272052`.
+- LeVJEPA video recipe: `third_party/papers/2608.27395v1-levjepa.pdf`, Section 3
+  and Appendices A–B;
+  `MLO-lab/LeVJEPA@941526c428aa513a5bdfa38697724fda794d8496`.
 - EMA momentum schedule and target-encoder-for-evaluation precedent:
   `third_party/papers/2301.08243v3.pdf`;
   `facebookresearch/ijepa@52c1ae95d05f743e000e8f10a1f3a79b10cff048`.

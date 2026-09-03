@@ -16,7 +16,7 @@ wearing a number.
 | `alignment` | The temporal contract, on episodes whose every value identifies its own index | Any shift in the led-to convention; a window crossing an episode boundary; a start-of-episode action leaking into a mid-episode window; a relevant row drawn without the whole event transition; a batch that stratifies during pretraining |
 | `scan_step_parity` | One batched scan equals the same frames stepped one at a time carrying memory — in **outputs and in state** | Training reads the scan and imagination reads the steps, so a divergence is a model correct in every loss and wrong in every rollout. Runs past `dynamics_context` so the windowed branch actually executes |
 | `reset_parity` | An episode boundary erases the previous episode | A driver threading state across a boundary. Asserted by *running* two episodes and requiring the second to match the same episode run alone, including the step counter that dates RoPE and the decode window |
-| `firewall` | Agent state reaches the world only through the chosen action | A mask that blocks one direction only. Asserted both ways, and with the agent inactive |
+| `firewall` | Agent/task state reaches the world only through the chosen action | A mask that blocks one direction only. Asserted both ways, with the agent inactive, and across `q` once tasks are enabled |
 | `branch_nonmutation` | Evaluating a candidate does not mutate the state it was evaluated from | The flow arm's rungs are read-only; a candidate that wrote memory would make the commit path depend on how many rungs ran |
 | `recurrent_carry` | The rollout depends on history | A model ignoring its own memory passes every one-step loss and produces a constant trajectory. This is also the only place the flow arm's history dependence is tested, since `World.predict` reads the current block's own corrupted latent |
 
@@ -55,6 +55,44 @@ is a separate instrument, run once on sealed seeds after all selection.
 
 `pytest d4mj/tests` is the companion: gates assert cross-arm contracts on the
 deployment device, tests pin semantics on CPU.
+
+## Stage-B representation gates
+
+The six above remain unchanged. Each new representation also passes two gates
+before its cached latents may train a world model.
+
+`representation_export` binds `C*` to the representation family, checkpoint and
+declared copy; emits finite dense `[B,T,64,16]` latents with every training
+corruption off; and matches recurrent scan, cached targets, and deployment.
+EMA-JEPA-R must export its stopped EMA target. LeVJEPA-R must export its
+evaluation Polyak copy without projector output; changing an excluded token
+cannot change its training readout, and any later compact path must match padded
+outputs, gradients, and state.
+
+`representation_retention` freezes the encoder and applies the same DEV probes
+to every export: state/inventory/health, action-conditioned successor, death,
+and achievement-event information. Thresholds are fixed from the MAE anchor
+before either JEPA arm is inspected. Noncollapse or a good clip readout is not a
+substitute: LeVJEPA directly supervises only that readout, while the world model
+consumes dense latents.
+
+Source-fidelity checks also record EMA masks/predictor/momentum, or LeVJEPA
+same-window views, two-sided gradients, per-view SIGReg, true keep positions,
+and the actual global sample count seen by SIGReg. Optimizer accumulation does
+not enlarge that count unless embeddings are regularized jointly. Phase 1A uses
+the full corpus and no task, reward, death, or achievement labels.
+
+## Task-conditioning extension
+
+When achievement conditioning is enabled, `firewall` additionally varies `q`
+at fixed observation, action, and memory. World latents, non-agent memory streams,
+and next-latent predictions must remain identical; agent memory, policy, task
+reward, and value may change; continuation may not. The eligible task set,
+sparse labels, prompt, and task-switch handling of agent memory are derived from
+TRAIN only and frozen before DEV or FINAL execution. A switch never resets world
+streams. Per-task actors compare against their own frozen task-conditioned BC
+priors and random; aggregate control is reported separately, not substituted for
+that matched prior.
 
 ## Trained outcome gate
 

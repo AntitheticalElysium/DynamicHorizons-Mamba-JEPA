@@ -21,6 +21,7 @@
 2605.13013v1.pdf | JEDI: Joint Embedding Diffusion World Model for Multi-Agent Trajectory Modeling and Planning | f78f2d417cbd156a859a204773e0efe010bf35b8174530c4fcacc5d7c1421c81
 2606.27326v1.pdf | Hallucination in World Models is More Common than You Think | 2f10358cff583fc00df6a434c31a01872748bd9ed767c5874ff23eaecf823beb
 2607.05238v1.pdf | MoP-JEPA: Hard-Assigned Predictor Mixtures for Stochastic JEPA World Models | c454b6399693ee2afbc6b261f00b0d66392c71cb9bd698602956bd344f27932e
+2608.27395v1-levjepa.pdf | LeVJEPA: Efficient & Scalable Video Pretraining without the Heuristics | 047a945c5ccc7846269aa077fabce672f2b6c62b1aefba38ffa23004e63bad08
 
 # Control-centric action-conditioned self-prediction corpus (added 2026-07-15,
 # closing the literature gap identified by both external reviews: the project

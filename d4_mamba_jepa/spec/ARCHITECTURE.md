@@ -1,5 +1,12 @@
 # Architecture
 
+> Scope: this is the legacy `d4_mamba_jepa` implementation ledger. The active
+> successor design — MAE/EMA-JEPA-R/LeVJEPA-R, Direct/Flow, persistent T/M state,
+> and achievement-conditioned imagination — lives in
+> [`d4mj/spec/ARCHITECTURE.md`](../../d4mj/spec/ARCHITECTURE.md), with its
+> decisions and gates alongside it. Planned components are not backported here
+> until this package implements them.
+
 What the system IS, right now. Present tense, overwritten in place, no history.
 One block per component in dataflow order. Shapes are for the live
 `craftax_jepa_config()`.
