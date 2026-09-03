@@ -347,3 +347,39 @@ def test_paired_semantic_off_scores_only_the_generated_readout(config, monkeypat
     train.train_agent(episodes, World(config), 1, config, paired_semantic=False)
     assert len(targets_seen) == 1, f"the default must score one readout, saw {len(targets_seen)}"
     assert not any(x is observed for x in seen), "the observed readout was scored by default"
+
+
+def test_frozen_world_updates_only_the_heads(config, monkeypatch, episodes):
+    """The head ceiling is only a ceiling if the world is genuinely held fixed: a
+    difference between two arms must not be attributable to the world or to its
+    interaction with the heads."""
+    train, seen, _, _, _ = _paired_probe(config, monkeypatch, True)
+    world = World(config)
+    before = {name: parameter.detach().clone() for name, parameter in world.named_parameters()}
+    train.train_agent(episodes, world, 1, config, paired_semantic=True, freeze_world=True)
+    assert all(torch.equal(before[name], parameter)
+               for name, parameter in world.named_parameters()), "the world moved"
+    assert not any(parameter.requires_grad for parameter in world.parameters())
+
+
+def test_phase_two_resume_rejects_a_different_paired_setting(config, tmp_path):
+    """`paired_semantic` and `freeze_world` change what the run optimises, so a
+    checkpoint must not silently resume under the opposite one."""
+    from d4mj import train
+
+    contracts = set()
+    original = train._checkpoint
+
+    def record(path, cfg, bundle, balance, streams, step=None, contract=""):
+        contracts.add(contract)
+        return 1 if step is None else None
+
+    train._checkpoint = record
+    try:
+        for paired in (False, True):
+            for frozen in (False, True):
+                train.train_agent([], World(config), 1, config,
+                                  paired_semantic=paired, freeze_world=frozen)
+    finally:
+        train._checkpoint = original
+    assert len(contracts) == 4, sorted(contracts)

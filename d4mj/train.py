@@ -294,6 +294,7 @@ def train_agent(
     counterfactual=None,
     counterfactual_mass: float = 0.0,
     paired_semantic: bool = False,
+    freeze_world: bool = False,
 ) -> Heads:
     """Phase 2. The dynamics objective continues alongside the head losses, which
     keeps the world model from drifting while the heads fit it.
@@ -320,12 +321,26 @@ def train_agent(
     device = config.device
     torch.manual_seed(config.seed + 2)
     heads = Heads(config).to(device)
-    optimiser = optimizer([world, heads], config)
+    # `freeze_world` turns this into a head-extraction ceiling: the readouts are whatever
+    # the given world already produces, so a difference between two arms cannot come from
+    # the world or from its interaction with the heads. The dynamics loss is still
+    # computed -- the readouts come from that same pass -- but carries no gradient, and
+    # `_balance` normalises each loss by its own RMS, so it cannot reweight the heads.
+    if freeze_world:
+        for parameter in world.parameters():
+            parameter.requires_grad_(False)
+    optimiser = optimizer([heads] if freeze_world else [world, heads], config)
     sampler, rng = _generators(config, 2)
     balance: dict[str, float] = {}
     bundle, streams = [world, heads, optimiser], {"sampler": sampler, "model": rng}
     contract = f"2:{world_steps}:{steps}"
     contract += ":continuation=paired-v2"
+    # Both change what the run optimises, so a checkpoint must not resume under the
+    # opposite setting.
+    if paired_semantic:
+        contract += ":paired_semantic"
+    if freeze_world:
+        contract += ":frozen_world"
     if counterfactual is not None:
         contract += f":counterfactual={counterfactual_mass:.17g}"
     if terminal_dynamics_mass:
