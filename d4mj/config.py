@@ -88,8 +88,9 @@ class Config:
     # recursive MSE -- and the measured failure is that generated states stay
     # geometrically close to real ones while their readouts stop meaning the same thing
     # to the agent. This weights a stop-gradient pull of the generated readout onto the
-    # observed one at the already-matched rollout positions. Zero until an arm asks.
-    align_mass: float = 0.0
+    # observed one at the already-matched rollout positions. An additive coefficient
+    # on that term, not a share of a fixed budget. Zero until an arm asks.
+    align_weight: float = 0.0
 
     # Evaluation (S52). The native Craftax horizon, not the collector's 2500 cap.
     horizon_eval: int = 10000

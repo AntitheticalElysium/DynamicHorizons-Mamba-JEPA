@@ -35,7 +35,21 @@ def load(path: Path, config: Config, **objects) -> dict:
     payload = torch.load(path, weights_only=False)
     if payload["format"] != FORMAT:
         raise ValueError(f"expected {FORMAT}, found {payload['format']}")
-    if payload["config"] != asdict(config):
+    stored, requested = payload["config"], asdict(config)
+    # A field added after a checkpoint was written is absent from its stored config, and
+    # a whole-dict comparison then rejects every older checkpoint. Fields listed here
+    # take their default when missing -- and only when the caller is asking for that
+    # default, so a checkpoint that never trained with alignment cannot be loaded as
+    # though it had.
+    for field, default in (("align_weight", 0.0),):
+        if field not in stored:
+            if requested.get(field, default) != default:
+                raise ValueError(
+                    f"checkpoint predates `{field}` and cannot be loaded with "
+                    f"{field}={requested[field]}"
+                )
+            stored = stored | {field: default}
+    if stored != requested:
         raise ValueError("checkpoint config differs from the one requested")
     verify_sources(payload["sources"], config)
     torch.set_rng_state(payload["rng"])

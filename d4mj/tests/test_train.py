@@ -3,6 +3,7 @@ from dataclasses import replace
 import pytest
 import torch
 
+from d4mj.checkpoint import load, save
 from d4mj.train import (
     _checkpoint,
     _generators,
@@ -259,3 +260,21 @@ def test_resume_from_absent_checkpoint_starts_at_zero(config, tmp_path):
     streams = {"sampler": sampler, "model": rng}
     assert _checkpoint(tmp_path / "absent.pt", config, [world], {}, streams) == 0
     assert _checkpoint(None, config, [world], {}, streams) == 0
+
+
+def test_checkpoint_predating_a_field_loads_at_its_default(config, tmp_path):
+    """A field added to `Config` is absent from every checkpoint written before it, and
+    a whole-dict comparison would reject all of them. The migration must accept those at
+    the default and still refuse to load one as though it had trained with the feature --
+    otherwise an unaligned world would silently pass as an aligned arm."""
+    path = tmp_path / "old.pt"
+    world = World(replace(config, transition="direct"))
+    save(path, replace(config, transition="direct"), part0=world)
+    payload = torch.load(path, weights_only=False)
+    del payload["config"]["align_weight"]
+    torch.save(payload, path)
+
+    load(path, replace(config, transition="direct"), part0=World(replace(config, transition="direct")))
+    with pytest.raises(ValueError, match="predates"):
+        aligned = replace(config, transition="direct", align_weight=0.5)
+        load(path, aligned, part0=World(aligned))

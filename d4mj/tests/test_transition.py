@@ -224,3 +224,70 @@ def test_commit_prefix_rows_carry_the_commit_condition(config):
 def test_loss_is_finite(config, transition):
     config = replace(config, transition=transition)
     assert torch.isfinite(loss_of(world_for(config, transition), latent_batch(config, 4, 6), config))
+
+
+def test_alignment_is_inert_at_zero_and_linear_in_its_weight(config):
+    """`align_weight` is an additive coefficient, so the loss must move by exactly the
+    weight times one fixed quantity. Linearity is what distinguishes that from a term
+    that also perturbs the rollout or the teacher-forcing path."""
+    config = replace(config, transition="direct")
+    world = world_for(config, "direct").eval()
+    batch = latent_batch(config, 4, 6)
+    with torch.no_grad():
+        # A list, not a dict: keying by weight collapsed the two zero-weight calls into
+        # one entry and turned the reproducibility check into `x == x`.
+        repeated = [float(loss_of(world, batch, replace(config, align_weight=0.0)))
+                    for _ in range(2)]
+        losses = {weight: float(loss_of(world, batch, replace(config, align_weight=weight)))
+                  for weight in (0.0, 0.5, 1.0)}
+    assert repeated[0] == repeated[1], "the zero-weight objective is not reproducible"
+    assert repeated[0] == losses[0.0]
+    assert losses[0.5] > losses[0.0], "alignment contributed nothing at a nonzero weight"
+    assert abs((losses[1.0] - losses[0.0]) - 2 * (losses[0.5] - losses[0.0])) < 1e-6
+
+
+def test_alignment_detaches_the_observed_side(config):
+    """Dreamer 3 aligns its prior to a stopped posterior. If the observed readout were
+    left attached, the world could satisfy the term by moving the observed side toward
+    the generated one -- the opposite of the intent -- and the gradient would differ
+    from the stop-gradient formulation."""
+    config = replace(config, transition="direct", gradient_checkpointing=False)
+    weight, world = 0.5, world_for(config, "direct")
+    batch = latent_batch(config, 4, 6)
+
+    def gradient(loss):
+        world.zero_grad(set_to_none=True)
+        loss.backward()
+        return torch.cat([p.grad.flatten() for p in world.parameters() if p.grad is not None])
+
+    combined = gradient(loss_of(world, batch, replace(config, align_weight=weight)))
+
+    plain, readout, observed = transition.transition_loss(
+        world, batch, torch.Generator().manual_seed(3), replace(config, align_weight=0.0),
+        return_agent=True, return_observed=True,
+    )
+    start = batch.latents.shape[1] - config.direct_rollout
+    stopped = (readout[:, start:] - observed[:, start:].detach()).pow(2).mean(dim=(1, 2, 3))
+    manual = gradient(plain + weight * transition._uniform_mean(stopped, batch))
+    assert torch.allclose(combined, manual, atol=1e-6)
+
+
+def test_alignment_gradient_reaches_the_world(config):
+    """The term must train the generated side, not merely register in the scalar."""
+    config = replace(config, transition="direct", gradient_checkpointing=False)
+    world = world_for(config, "direct")
+    batch = latent_batch(config, 4, 6)
+
+    def gradient(weight):
+        world.zero_grad(set_to_none=True)
+        loss_of(world, batch, replace(config, align_weight=weight)).backward()
+        return {name: p.grad.clone() for name, p in world.named_parameters()
+                if p.grad is not None}
+
+    plain, aligned = gradient(0.0), gradient(0.5)
+    moved = [name for name in aligned if not torch.equal(aligned[name], plain[name])]
+    assert moved, "alignment changed no gradient"
+    # Named separately: an `any` over both groups passes on the backbone alone, which
+    # would not show that the term reaches the parts that produce the generated readout.
+    for group in ("readout", "direct_mixer", "pool", "backbone"):
+        assert any(group in name for name in moved), (group, sorted(moved)[:8])

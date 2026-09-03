@@ -76,28 +76,45 @@ def main() -> None:
     parser.add_argument("--episodes", type=int, default=64)
     parser.add_argument("--depth", type=int, default=2)
     parser.add_argument("--ranking-roots", type=int, default=16)
-    parser.add_argument("--out", type=Path, default=ROOT / "artifacts/generated_drift")
+    # Arm-specific by default: a shared path would overwrite the baseline's own report.
+    parser.add_argument("--out", type=Path, default=None)
+    # The arm supplies its own world, its own BC head and its own config. Reading
+    # time_mixer and align_weight from its report is what keeps this from scoring one
+    # arm's generated states against another arm's semantics.
+    parser.add_argument("--arm-dir", type=Path, default=HERE / "v2_phase2_attention")
+    # `name=path` pairs; pass the flag with no values to score drift without critics,
+    # which is the case for an arm that has no Phase 3 yet.
+    parser.add_argument("--critics", nargs="*", default=None)
     args = parser.parse_args()
+    args.out = args.out or ROOT / "artifacts/generated_drift" / args.arm_dir.name
     args.out.mkdir(parents=True, exist_ok=True)
 
     base = replace(Config(), n_latents=64, d_bottleneck=16)
-    saved = replace(base, transition="direct", time_mixer="attention")
+    trained = json.loads((args.arm_dir / "training_report.json").read_text())
+    saved = replace(base, transition="direct",
+                    time_mixer=trained.get("time_mixer", "attention"),
+                    align_weight=trained.get("align_weight", 0.0))
     stored = json.loads(REPORT.read_text())
     encoder = Encoder(base).to(DEVICE)
     load(ENCODER, replace(base, batch=stored["batch"], seed=stored["seed"]),
          part0=encoder, part1=Decoder(base))
     world, prior = World(saved).to(DEVICE), Heads(saved).to(DEVICE)
-    load(HERE / "v2_phase2_attention" / "phase2_final.pt", saved, part0=world, part1=prior)
+    load(args.arm_dir / "phase2_final.pt", saved, part0=world, part1=prior)
     world.eval(), encoder.eval(), prior.eval()
 
-    import __main__
-    from run_oracle_phase3 import OracleStream
-    __main__.OracleStream = OracleStream
+    wanted = (CRITICS if args.critics is None else
+              {pair.split("=", 1)[0]: Path(pair.split("=", 1)[1]) for pair in args.critics})
     critics = {}
-    for name, path in CRITICS.items():
-        head = Heads(saved).to(DEVICE)
-        head.load_state_dict(torch.load(path, weights_only=False)["heads"])
-        critics[name] = head.eval()
+    if wanted:
+        import __main__
+        from run_oracle_phase3 import OracleStream
+        __main__.OracleStream = OracleStream
+        for name, path in wanted.items():
+            head = Heads(saved).to(DEVICE)
+            head.load_state_dict(torch.load(path, weights_only=False)["heads"])
+            critics[name] = head.eval()
+    print(f"arm {args.arm_dir.name}: time_mixer={saved.time_mixer} "
+          f"align_weight={saved.align_weight}, critics={list(critics) or 'none'}", flush=True)
 
     rng = torch.Generator(device=DEVICE).manual_seed(2**18)
     rows, rankings = [], []
@@ -205,6 +222,10 @@ def main() -> None:
 
     (args.out / "generated_drift.json").write_text(json.dumps(
         {"episodes": args.episodes, "depth": args.depth, "roots": len(rows),
+         "arm_dir": str(args.arm_dir), "checkpoint": str(args.arm_dir / "phase2_final.pt"),
+         "time_mixer": saved.time_mixer, "align_weight": saved.align_weight,
+         "direct_rollout": saved.direct_rollout, "seed_base": args.seed_base,
+         "critics": {name: str(path) for name, path in wanted.items()},
          "rows": rows, "rankings": rankings}, indent=2, default=float))
 
     print(f"\n{len(rows)} roots, one per DEV seed, identical action sequence on both chains")

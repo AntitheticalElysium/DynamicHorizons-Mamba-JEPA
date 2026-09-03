@@ -87,14 +87,24 @@ def main() -> None:
     parser.add_argument("--roots", type=int, default=2, help="v2 roots per step")
     parser.add_argument("--mass", type=float, default=0.2)
     parser.add_argument("--expert", type=int, default=320)
+    # An alignment arm is a separate world that needs its own Phase 2. Without explicit
+    # routing it would either read the control's world or overwrite the control's output.
+    parser.add_argument("--source", type=Path, default=None)
+    parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
-    source = HERE / f"v2_direct_{args.arm}"
-    out = HERE / f"v2_phase2_{args.arm}"
+    source = args.source or HERE / f"v2_direct_{args.arm}"
+    out = args.out or HERE / f"v2_phase2_{args.arm}"
     out.mkdir(parents=True, exist_ok=True)
 
     base = replace(Config(), n_latents=64, d_bottleneck=16)
-    config = replace(base, transition="direct", time_mixer=args.arm)
+    # The world arrives as a bare state dict, so nothing here would catch a config that
+    # differs from the one it was trained under. Phase 2 keeps training the world for
+    # another 10k steps, so inheriting the Phase-1B alignment weight is what stops this
+    # phase from quietly undoing the intervention it is meant to carry.
+    trained = json.loads((source / "training_report.json").read_text())
+    config = replace(base, transition="direct", time_mixer=args.arm,
+                     align_weight=trained.get("align_weight", 0.0))
     world = World(config).to(DEVICE)
     world.load_state_dict(torch.load(source / "world.pt", weights_only=False)["world"])
 
@@ -115,7 +125,8 @@ def main() -> None:
     (out / "training_report.json").write_text(json.dumps(
         {"phase": 2, "arm": args.arm, "time_mixer": args.arm, "steps": args.steps,
          "counterfactual_roots": args.roots, "counterfactual_mass": args.mass,
-         "source": str(source), "seed": config.seed}, indent=2))
+         "align_weight": config.align_weight, "direct_rollout": config.direct_rollout,
+         "source": str(source), "out": str(out), "seed": config.seed}, indent=2))
     print(f"phase 2 {args.arm} complete", flush=True)
 
 
