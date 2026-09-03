@@ -294,6 +294,7 @@ def train_agent(
     counterfactual=None,
     counterfactual_mass: float = 0.0,
     paired_semantic: bool = False,
+    rollout_only: bool = False,
     freeze_world: bool = False,
 ) -> Heads:
     """Phase 2. The dynamics objective continues alongside the head losses, which
@@ -339,6 +340,8 @@ def train_agent(
     # opposite setting.
     if paired_semantic:
         contract += ":paired_semantic"
+    if rollout_only:
+        contract += ":rollout_only"
     if freeze_world:
         contract += ":frozen_world"
     if counterfactual is not None:
@@ -354,8 +357,16 @@ def train_agent(
             step=world_steps + step,
         )
         targets = head_targets(batch, config)
+        # The generated readouts are the last `direct_rollout` blocks and nothing else,
+        # so scoring every block compares two objectives that are the same tensor almost
+        # everywhere: measured, 2 of 16 blocks differ on short rows and 2 of 64 on long
+        # ones. `rollout_only` confines both arms to the blocks where they can differ.
+        window = None
+        if rollout_only:
+            window = torch.zeros(agent.shape[1], device=device)
+            window[-config.direct_rollout:] = 1.0
         readout = heads(agent) | {"centers": heads.centers}
-        losses = {"dynamics": dynamics} | head_loss(readout, targets, config)
+        losses = {"dynamics": dynamics} | head_loss(readout, targets, config, window)
         if paired_semantic and observed is not agent:
             # The generated and the observed readout of the same state, judged against
             # the same real targets. Raw readout MSE in Phase 1B was satisfiable by
@@ -364,7 +375,8 @@ def train_agent(
             # predict them. Averaged, so total head-loss mass is unchanged and no new
             # weight is introduced. The flow arm returns one readout for both and is
             # skipped by identity, as the terminal path already does.
-            paired = head_loss(heads(observed) | {"centers": heads.centers}, targets, config)
+            paired = head_loss(
+                heads(observed) | {"centers": heads.centers}, targets, config, window)
             losses = {name: 0.5 * (value + paired[name]) if name in paired else value
                       for name, value in losses.items()}
 

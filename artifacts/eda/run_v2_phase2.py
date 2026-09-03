@@ -89,6 +89,9 @@ def main() -> None:
     parser.add_argument("--expert", type=int, default=320)
     # An alignment arm is a separate world that needs its own Phase 2. Without explicit
     # routing it would either read the control's world or overwrite the control's output.
+    parser.add_argument("--rollout-only", action="store_true",
+                        help="score the heads only on the generated blocks, the ones "
+                             "where the observed and generated readouts can differ")
     parser.add_argument("--freeze-world", action="store_true",
                         help="head-extraction ceiling: optimise the heads only, so a "
                              "difference between arms cannot come from the world")
@@ -125,6 +128,7 @@ def main() -> None:
                         counterfactual=sampler(pack, args.roots, config.seed + 11),
                         counterfactual_mass=args.mass,
                         paired_semantic=args.paired_semantic,
+                        rollout_only=args.rollout_only,
                         freeze_world=args.freeze_world)
     save(out / "phase2_final.pt", config, part0=world, part1=heads)
     torch.save({"world": world.state_dict()}, out / "world.pt")
@@ -135,6 +139,7 @@ def main() -> None:
          "counterfactual_roots": args.roots, "counterfactual_mass": args.mass,
          "align_weight": config.align_weight, "direct_rollout": config.direct_rollout,
          "paired_semantic": args.paired_semantic, "freeze_world": args.freeze_world,
+         "rollout_only": args.rollout_only,
          "source": str(source), "out": str(out), "seed": config.seed}, indent=2))
     print(f"phase 2 {args.arm} complete", flush=True)
 

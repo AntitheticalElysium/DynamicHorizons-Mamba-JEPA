@@ -100,7 +100,8 @@ def head_targets(batch: Batch, config: Config) -> dict[str, Tensor]:
 
 
 def head_loss(
-    predictions: dict[str, Tensor], targets: dict[str, Tensor], config: Config
+    predictions: dict[str, Tensor], targets: dict[str, Tensor], config: Config,
+    positions: Tensor | None = None,
 ) -> dict[str, Tensor]:
     """Returned per head, not summed: Dreamer 4 normalises every concurrent loss by
     its own running RMS, and merging them first lets whichever head has the largest
@@ -108,6 +109,14 @@ def head_loss(
 
     Behaviour cloning reads the relevant half only (§4.1). The main batch supplies
     reward and continuation; terminal tails use `paired_terminal_loss` separately.
+
+    `positions` restricts every head to the same blocks -- a `(blocks,)` mask folded
+    into the existing validity masks. Direct replaces only the last `direct_rollout`
+    readouts with generated ones, so a loss averaged over all blocks is dominated by
+    positions where the generated and observed readouts are the same tensor. Masking is
+    used rather than slicing precisely because it leaves every target at its own index:
+    the reward and policy leads are offset by the led-to convention, and re-deriving
+    those offsets against a shortened axis is how a silent one-block shift would enter.
     """
     centers = predictions["centers"]
     policy = F.cross_entropy(
@@ -121,6 +130,10 @@ def head_loss(
     continuation_valid = targets["continuation_valid"]
     actions = targets["action_valid"] * targets["policy_rows"]
     rewarded = valid * targets["reward_rows"]
+    if positions is not None:
+        window = positions.to(actions.dtype).view(1, -1, 1)
+        actions, rewarded = actions * window, rewarded * window
+        continuation_valid = continuation_valid * window
     return {
         "policy": (policy * actions).sum() / actions.sum().clamp(min=1.0),
         "reward": (reward * rewarded).sum() / rewarded.sum().clamp(min=1.0),

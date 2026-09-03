@@ -197,3 +197,70 @@ def test_twohot_is_exact_between_centres(config):
     weights = twohot(values, centers)
     assert torch.allclose(weights.sum(-1), torch.ones_like(values))
     assert torch.allclose((weights * centers).sum(-1), values, atol=1e-6)
+
+
+def _predictions(config, rows=2, blocks=6, seed=0):
+    from d4mj.agent import Heads
+    torch.manual_seed(seed)
+    heads = Heads(config)
+    agent = torch.randn(rows, blocks, config.n_agent, config.d_model)
+    return heads(agent) | {"centers": heads.centers}
+
+
+def test_position_mask_recombines_to_the_unmasked_loss(config):
+    """Masking must only re-weight, never re-pair. Each block's masked loss, weighted by
+    its share of the validity mass, has to sum back to the loss over all blocks."""
+    from d4mj.agent import head_loss, head_targets
+    from .conftest import latent_batch
+
+    blocks = 6
+    batch = latent_batch(config, 2, blocks, relevant=[True, False])
+    targets = head_targets(batch, config)
+    predictions = _predictions(config, 2, blocks)
+    whole = head_loss(predictions, targets, config)
+
+    mass = {"policy": targets["action_valid"] * targets["policy_rows"],
+            "reward": targets["valid"] * targets["reward_rows"],
+            "continuation": targets["continuation_valid"]}
+    totals = {name: float(value.sum()) for name, value in mass.items()}
+    rebuilt = dict.fromkeys(whole, 0.0)
+    for block in range(blocks):
+        window = torch.zeros(blocks)
+        window[block] = 1.0
+        part = head_loss(predictions, targets, config, window)
+        for name in whole:
+            share = float((mass[name] * window.view(1, -1, 1)).sum())
+            if share:
+                rebuilt[name] += float(part[name]) * share / totals[name]
+    for name, value in whole.items():
+        assert abs(rebuilt[name] - float(value)) < 1e-4, (name, rebuilt[name], float(value))
+
+
+def test_position_mask_scores_each_block_against_its_own_target(config):
+    """A masked block's loss must depend on that block's prediction and no other. If
+    masking shifted a head's target by one -- the reward and policy leads are offset by
+    the led-to convention -- perturbing a neighbour would move the wrong block's loss."""
+    from d4mj.agent import head_loss, head_targets
+    from .conftest import latent_batch
+
+    blocks, chosen, other = 6, 2, 4
+    batch = latent_batch(config, 2, blocks, relevant=[True, False])
+    targets = head_targets(batch, config)
+    predictions = _predictions(config, 2, blocks)
+    window = torch.zeros(blocks)
+    window[chosen] = 1.0
+    before = head_loss(predictions, targets, config, window)
+
+    for head in ("policy", "reward", "continuation"):
+        moved = {k: (v.clone() if torch.is_tensor(v) else v) for k, v in predictions.items()}
+        # A single logit, not the whole block: policy and reward are scored through a
+        # softmax, so shifting every logit equally leaves the loss untouched.
+        moved[head][..., 0][:, other] = moved[head][..., 0][:, other] + 5.0
+        after = head_loss(moved, targets, config, window)
+        assert torch.allclose(after[head], before[head]), (
+            f"masking block {chosen} was affected by a change at block {other} in {head}")
+
+        touched = {k: (v.clone() if torch.is_tensor(v) else v) for k, v in predictions.items()}
+        touched[head][..., 0][:, chosen] = touched[head][..., 0][:, chosen] + 5.0
+        assert not torch.allclose(head_loss(touched, targets, config, window)[head],
+                                  before[head]), f"{head} ignored its own masked block"

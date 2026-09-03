@@ -308,7 +308,7 @@ def _paired_probe(config, monkeypatch, paired):
 
     seen, targets_seen = [], []
 
-    def head_loss(predictions, targets, cfg):
+    def head_loss(predictions, targets, cfg, positions=None):
         targets_seen.append(id(targets))
         return {name: predictions["value"].float().mean()
                 for name in ("policy", "reward", "continuation")}
