@@ -20,7 +20,7 @@ from d4mj.config import Config
 from d4mj.data import patchify
 from d4mj.env import reset, step as env_step
 from d4mj.execution import evaluate, run_episode
-from d4mj.imagination import Trajectory
+from d4mj.imagination import Trajectory, imagine
 from d4mj.representation import Encoder
 from d4mj.state import RealState
 from d4mj.train import _balance, _update, optimizer
@@ -167,6 +167,40 @@ def oracle_trajectory(
 
 
 @torch.no_grad()
+def learned_trajectory(
+    streams: list[OracleStream],
+    world: World,
+    heads: Heads,
+    rng: torch.Generator,
+    policy_rng: torch.Generator,
+    config: Config,
+) -> tuple[Trajectory, list[OracleStream], dict[str, float]]:
+    """The matched-context control: the oracle's persistent BC contexts, but production
+    `imagine` supplies the trajectory -- Direct successors with predicted reward and
+    continuation. Holding the contexts fixed and swapping only the trajectory is what
+    separates the offline context sampler from the modelled path.
+
+    Streams carry different `step` values, so they cannot share one batched WorldState;
+    each is imagined on its own and the rows are stacked. `terminal` here is predicted
+    termination mass, not a count of real resets -- imagination has no simulator to end.
+    """
+    rolled = [
+        imagine(world, heads, stream.state.world, stream.agent, rng, policy_rng, config)
+        for stream in streams
+    ]
+    trajectory = Trajectory(
+        **{
+            field: torch.cat([getattr(row, field) for row in rolled], dim=0)
+            for field in ("action", "logits", "reward", "continuation", "value", "agent")
+        }
+    )
+    return trajectory, streams, {
+        "reward": float(trajectory.reward.mean()),
+        "nonzero_reward": float((trajectory.reward != 0).float().mean()),
+        "terminal": float((1.0 - trajectory.continuation).mean()),
+    }
+
+
 def advance_contexts(
     streams: list[OracleStream],
     world: World,
@@ -287,6 +321,7 @@ def main() -> None:
     # checkpoint's config and so have to be restored to load it.
     parser.add_argument("--encoder-report", type=Path, default=None)
     parser.add_argument("--horizon", type=int, default=2)
+    parser.add_argument("--trajectory", choices=("oracle", "learned"), default="oracle")
     parser.add_argument("--train-seed-base", type=int, default=20_000)
     parser.add_argument("--eval-seed-base", type=int, default=30_000)
     parser.add_argument("--eval-episodes", type=int, default=512)
@@ -347,9 +382,16 @@ def main() -> None:
         "horizon": args.horizon,
         "actor_batch": config.actor_batch,
         "train_seed_base": args.train_seed_base,
-        "oracle": "simulator successor pixels plus simulator reward and continuation",
+        "trajectory": args.trajectory,
+        "oracle": (
+            "simulator successor pixels plus simulator reward and continuation"
+            if args.trajectory == "oracle"
+            else "learned Direct successors with predicted reward and continuation"
+        ),
         "starting_contexts": "persistent frozen-BC streams; actor branches discarded",
-        "world_advance_calls": 0,
+        "world_advance_calls": (
+            0 if args.trajectory == "oracle" else args.horizon * config.actor_batch
+        ),
         "evaluation_gate": "paired mean achievement count; geometric score co-reported",
     }
     progress = args.out / "progress.pt"
@@ -364,14 +406,18 @@ def main() -> None:
             for slot in range(config.actor_batch)
         ]
     log(
-        f"oracle Phase 3: direct-attention, h={config.horizon}, "
+        f"oracle Phase 3 [{args.trajectory}]: direct-attention, h={config.horizon}, "
         f"batch={config.actor_batch}, steps={args.steps}, resume={resume}"
     )
 
     totals = {"reward": 0.0, "nonzero_reward": 0.0, "terminal": 0.0}
     for step_index in range(resume, args.steps):
-        trajectory, _, metrics = oracle_trajectory(
-            streams, world, encoder, heads, rng, policy_rng, config, args.train_seed_base
+        trajectory, _, metrics = (
+            oracle_trajectory(
+                streams, world, encoder, heads, rng, policy_rng, config, args.train_seed_base
+            )
+            if args.trajectory == "oracle"
+            else learned_trajectory(streams, world, heads, rng, policy_rng, config)
         )
         returns = lambda_returns(trajectory, config)
         with torch.no_grad():
