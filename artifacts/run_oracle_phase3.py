@@ -166,7 +166,6 @@ def oracle_trajectory(
     }
 
 
-@torch.no_grad()
 def learned_trajectory(
     streams: list[OracleStream],
     world: World,
@@ -201,6 +200,7 @@ def learned_trajectory(
     }
 
 
+@torch.no_grad()
 def advance_contexts(
     streams: list[OracleStream],
     world: World,
