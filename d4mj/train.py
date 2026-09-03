@@ -419,7 +419,18 @@ def train_actor(
 
     Starting contexts use the §4.1 mixture. D4 applies it to "behavioral cloning,
     reward modeling, and reinforcement learning", so imagining only from uniformly
-    drawn contexts starts RL away from the events that carry the sparse reward."""
+    drawn contexts starts RL away from the events that carry the sparse reward.
+
+    S68 is enforced here rather than at each call site. Direct trains exactly
+    `direct_rollout` generated states, so an actor imagining past that optimises against
+    transitions and heads on inputs they never saw. Ten scripts were each re-deriving the
+    cap by hand. It is checked here and not in `imagine`, which is a mechanism the tests
+    legitimately exercise at other horizons."""
+    if config.transition == "direct" and config.horizon > config.direct_rollout:
+        raise ValueError(
+            f"horizon {config.horizon} exceeds the {config.direct_rollout} generated "
+            "states Direct trains (S68); raise direct_rollout and retrain the world first"
+        )
     device = config.device
     for parameter in world.parameters():
         parameter.requires_grad_(False)
