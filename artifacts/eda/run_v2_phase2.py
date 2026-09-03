@@ -89,6 +89,9 @@ def main() -> None:
     parser.add_argument("--expert", type=int, default=320)
     # An alignment arm is a separate world that needs its own Phase 2. Without explicit
     # routing it would either read the control's world or overwrite the control's output.
+    parser.add_argument("--paired-semantic", action="store_true",
+                        help="score the observed readout alongside the generated one "
+                             "against the same real targets, at half weight each")
     parser.add_argument("--source", type=Path, default=None)
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
@@ -117,7 +120,8 @@ def main() -> None:
     heads = train_agent(episodes, world, args.steps, config,
                         checkpoint=out / "phase2.pt", world_steps=20_000,
                         counterfactual=sampler(pack, args.roots, config.seed + 11),
-                        counterfactual_mass=args.mass)
+                        counterfactual_mass=args.mass,
+                        paired_semantic=args.paired_semantic)
     save(out / "phase2_final.pt", config, part0=world, part1=heads)
     torch.save({"world": world.state_dict()}, out / "world.pt")
     # the evaluators read the mixer from here; without it they default to attention and
@@ -126,6 +130,7 @@ def main() -> None:
         {"phase": 2, "arm": args.arm, "time_mixer": args.arm, "steps": args.steps,
          "counterfactual_roots": args.roots, "counterfactual_mass": args.mass,
          "align_weight": config.align_weight, "direct_rollout": config.direct_rollout,
+         "paired_semantic": args.paired_semantic,
          "source": str(source), "out": str(out), "seed": config.seed}, indent=2))
     print(f"phase 2 {args.arm} complete", flush=True)
 

@@ -293,6 +293,7 @@ def train_agent(
     terminal_dynamics_mass: float = 0.0,
     counterfactual=None,
     counterfactual_mass: float = 0.0,
+    paired_semantic: bool = False,
 ) -> Heads:
     """Phase 2. The dynamics objective continues alongside the head losses, which
     keeps the world model from drifting while the heads fit it.
@@ -333,11 +334,24 @@ def train_agent(
 
     for step in range(resume, steps):
         batch = _to(sample_batch(episodes, sampler, config, step, steps, mixture=True), device)
-        dynamics, agent = transition_loss(
-            world, batch, rng, config, return_agent=True, step=world_steps + step
+        dynamics, agent, observed = transition_loss(
+            world, batch, rng, config, return_agent=True, return_observed=True,
+            step=world_steps + step,
         )
+        targets = head_targets(batch, config)
         readout = heads(agent) | {"centers": heads.centers}
-        losses = {"dynamics": dynamics} | head_loss(readout, head_targets(batch, config), config)
+        losses = {"dynamics": dynamics} | head_loss(readout, targets, config)
+        if paired_semantic and observed is not agent:
+            # The generated and the observed readout of the same state, judged against
+            # the same real targets. Raw readout MSE in Phase 1B was satisfiable by
+            # collapsing both sides into a shared low-rank subspace; ground-truth actions
+            # and outcomes are what stop that, because a degenerate readout cannot
+            # predict them. Averaged, so total head-loss mass is unchanged and no new
+            # weight is introduced. The flow arm returns one readout for both and is
+            # skipped by identity, as the terminal path already does.
+            paired = head_loss(heads(observed) | {"centers": heads.centers}, targets, config)
+            losses = {name: 0.5 * (value + paired[name]) if name in paired else value
+                      for name, value in losses.items()}
 
         terminal = _to(sample_terminal_batch(episodes, sampler, config, step, steps), device)
         terminal_dynamics, terminal_agent, terminal_observed = _terminal_path(

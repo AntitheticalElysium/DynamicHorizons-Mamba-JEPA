@@ -278,3 +278,72 @@ def test_checkpoint_predating_a_field_loads_at_its_default(config, tmp_path):
     with pytest.raises(ValueError, match="predates"):
         aligned = replace(config, transition="direct", align_weight=0.5)
         load(path, aligned, part0=World(aligned))
+
+
+def _paired_probe(config, monkeypatch, paired):
+    """Run one `train_agent` step with the transition stubbed, counting how many times
+    the head losses are scored and on which readout."""
+    from d4mj import train
+    from d4mj.agent import head_loss as real_head_loss
+
+    rows, blocks = 2, config.sequence
+    generated = torch.randn(rows, blocks, config.n_agent, config.d_model)
+    observed = torch.randn(rows, blocks, config.n_agent, config.d_model)
+
+    # The terminal stratum calls `transition_loss` too and scores its own observed
+    # readout. Returning the same sentinels for both would make the terminal path look
+    # like the main one, so it gets its own pair.
+    from .conftest import latent_batch
+    terminal_batch = latent_batch(config, rows, blocks, relevant=[True, False])
+    tail = torch.randn(rows, blocks, config.n_agent, config.d_model)
+
+    def transition(world, batch, rng, cfg, return_agent=False, return_observed=False, step=0):
+        assert return_agent and return_observed, "paired supervision needs both readouts"
+        zero = torch.zeros((), requires_grad=True)
+        #  rebuilds the Batch, so the dataclass identity is gone by here; the
+        # latents tensor survives it, because .to() returns self when already on device.
+        if batch.latents is terminal_batch.latents:
+            return zero, tail, tail
+        return zero, generated, observed
+
+    seen, targets_seen = [], []
+
+    def head_loss(predictions, targets, cfg):
+        targets_seen.append(id(targets))
+        return {name: predictions["value"].float().mean()
+                for name in ("policy", "reward", "continuation")}
+
+    # Record what actually reaches the heads. Their output cannot discriminate here --
+    # the value head is zero-initialised, so both readouts score identically at step 0.
+    from d4mj.agent import Heads
+    forward = Heads.forward
+    monkeypatch.setattr(Heads, "forward",
+                        lambda self, agent: (seen.append(agent), forward(self, agent))[1])
+
+    # The conftest episodes carry no terminations, so the terminal stratum cannot be
+    # sampled from them. It is stubbed out: this probe is about the main path.
+    monkeypatch.setattr(train, "transition_loss", transition)
+    monkeypatch.setattr(train, "head_loss", head_loss)
+    monkeypatch.setattr(train, "sample_terminal_batch", lambda *a, **k: terminal_batch)
+    monkeypatch.setattr(train, "paired_terminal_loss",
+                        lambda *a, **k: torch.zeros((), requires_grad=True))
+    return train, seen, targets_seen, generated, observed
+
+
+def test_paired_semantic_scores_both_readouts_on_one_set_of_targets(config, monkeypatch, episodes):
+    """Phase 1B's raw readout MSE was satisfiable by collapsing both sides into a shared
+    subspace. Paired supervision judges each readout against real targets instead, so what
+    must hold is that BOTH are scored and that they are scored on the SAME targets."""
+    train, seen, targets_seen, generated, observed = _paired_probe(config, monkeypatch, True)
+    train.train_agent(episodes, World(config), 1, config, paired_semantic=True)
+    assert any(x is generated for x in seen), "the generated readout never reached the heads"
+    assert any(x is observed for x in seen), "the observed readout never reached the heads"
+    assert len(targets_seen) == 2, f"expected both readouts scored, saw {len(targets_seen)}"
+    assert targets_seen[0] == targets_seen[1], "the two paths saw different targets"
+
+
+def test_paired_semantic_off_scores_only_the_generated_readout(config, monkeypatch, episodes):
+    train, seen, targets_seen, generated, observed = _paired_probe(config, monkeypatch, False)
+    train.train_agent(episodes, World(config), 1, config, paired_semantic=False)
+    assert len(targets_seen) == 1, f"the default must score one readout, saw {len(targets_seen)}"
+    assert not any(x is observed for x in seen), "the observed readout was scored by default"
