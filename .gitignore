@@ -263,3 +263,5 @@ artifacts/eda/broad_forks_v2/
 
 # 32 MB of per-transition rows; the summary lives in the commit message and the log
 artifacts/paired_ceiling/
+
+artifacts/rollout_ceiling/
