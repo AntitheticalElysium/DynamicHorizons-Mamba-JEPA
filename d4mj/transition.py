@@ -289,7 +289,12 @@ def _direct_loss(world: World, batch, rng: torch.Generator, config: Config):
         ).pow(2).mean(dim=(1, 2, 3))
         generated.append(produced)
     readout = torch.cat([agent[:, :start], *generated], dim=1)
-    return _uniform_mean(teacher + rollout / steps, batch), readout, agent
+    # `agent` is this same world reading the real latents at these positions, so the two
+    # sides are the observed and generated readouts of one index. Detached on the
+    # observed side, after Dreamer 3's stop-gradient prior/posterior alignment.
+    aligned = (readout[:, start:] - agent[:, start:].detach()).pow(2).mean(dim=(1, 2, 3))
+    combined = teacher + rollout / steps + config.align_mass * aligned
+    return _uniform_mean(combined, batch), readout, agent
 
 
 def _shortcut_loss(world: World, batch, rng: torch.Generator, config: Config, step: int = 0) -> Tensor:

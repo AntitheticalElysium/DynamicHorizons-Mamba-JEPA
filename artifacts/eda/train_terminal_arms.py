@@ -381,6 +381,9 @@ def main() -> None:
                         help="marks the contract, so a smoke checkpoint can never be "
                              "mistaken for a real run's resume point")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--align-mass", type=float, default=0.0,
+                        help="stop-gradient pull of the generated readout onto the "
+                             "observed one at the matched rollout positions (S86)")
     args = parser.parse_args()
     out = args.out = args.out or HERE / f"terminal_{args.arm}"
     out.mkdir(parents=True, exist_ok=True)
@@ -405,7 +408,8 @@ def main() -> None:
         "undefined when only one of them is supervised per presentation")
 
     base = replace(Config(), n_latents=64, d_bottleneck=16)
-    config = replace(base, transition="direct", time_mixer=args.time_mixer)
+    config = replace(base, transition="direct", time_mixer=args.time_mixer,
+                     align_mass=args.align_mass)
     if args.seed is not None:
         config = replace(config, seed=args.seed)
     digest = json.loads((CACHE / "manifest.json").read_text())["cache_digest"]
@@ -568,6 +572,7 @@ def main() -> None:
          "terminal_mass": args.terminal_mass, "balance_outcomes": args.balance_outcomes,
          "root_source": args.roots, "regime_balance": args.regime_balance,
          "time_mixer": args.time_mixer, "second_weight": args.second_weight,
+         "align_mass": args.align_mass, "direct_rollout": config.direct_rollout,
          "regime_presentations": {k: int(seen[v].sum()) for k, v in groups.items()},
          "regime_repeats_per_root": {k: (float(seen[v].mean()) if len(v) else 0.0)
                                      for k, v in groups.items()},

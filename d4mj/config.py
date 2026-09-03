@@ -82,6 +82,15 @@ class Config:
     # every row, so `sequence` bounds it and must be raised alongside.
     direct_rollout: int = 2
 
+    # Dreamer 3 keeps its predicted prior and its observation-derived posterior aligned
+    # with two stop-gradient KLs (`rssm.loss`: dyn = kl(sg(post)||prior), rep =
+    # kl(post||sg(prior))). Direct has no equivalent -- it inherits only V-JEPA 2-AC's
+    # recursive MSE -- and the measured failure is that generated states stay
+    # geometrically close to real ones while their readouts stop meaning the same thing
+    # to the agent. This weights a stop-gradient pull of the generated readout onto the
+    # observed one at the already-matched rollout positions. Zero until an arm asks.
+    align_mass: float = 0.0
+
     # Evaluation (S52). The native Craftax horizon, not the collector's 2500 cap.
     horizon_eval: int = 10000
     eval_episodes: int = 64
