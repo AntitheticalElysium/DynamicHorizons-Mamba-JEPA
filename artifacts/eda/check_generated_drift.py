@@ -94,11 +94,15 @@ def main() -> None:
     # Sequence and rollout depth are architectural: `dynamics_context` bounds the world's
     # attention memory. An arm trained at 32/128/96 cannot be rebuilt from the 16/64/48
     # default, and the strict config comparison in `load` would reject it.
+    # Only the world config takes the arm's sequence settings. The tokenizer is trained
+    # separately and knows nothing about the world's rollout schedule, so folding these
+    # into `base` before loading it rejects an encoder that is perfectly valid.
+    world_base = base
     if "sequence" in trained:
-        base = replace(base, sequence=trained["sequence"],
-                       sequence_long=trained["sequence_long"],
-                       dynamics_context=trained["dynamics_context"])
-    saved = replace(base, transition="direct",
+        world_base = replace(base, sequence=trained["sequence"],
+                             sequence_long=trained["sequence_long"],
+                             dynamics_context=trained["dynamics_context"])
+    saved = replace(world_base, transition="direct",
                     time_mixer=trained.get("time_mixer", "attention"),
                     align_weight=trained.get("align_weight", 0.0),
                     direct_rollout=trained.get("direct_rollout", base.direct_rollout))
