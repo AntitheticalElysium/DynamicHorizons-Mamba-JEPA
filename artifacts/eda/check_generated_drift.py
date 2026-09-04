@@ -91,9 +91,17 @@ def main() -> None:
 
     base = replace(Config(), n_latents=64, d_bottleneck=16)
     trained = json.loads((args.arm_dir / "training_report.json").read_text())
+    # Sequence and rollout depth are architectural: `dynamics_context` bounds the world's
+    # attention memory. An arm trained at 32/128/96 cannot be rebuilt from the 16/64/48
+    # default, and the strict config comparison in `load` would reject it.
+    if "sequence" in trained:
+        base = replace(base, sequence=trained["sequence"],
+                       sequence_long=trained["sequence_long"],
+                       dynamics_context=trained["dynamics_context"])
     saved = replace(base, transition="direct",
                     time_mixer=trained.get("time_mixer", "attention"),
-                    align_weight=trained.get("align_weight", 0.0))
+                    align_weight=trained.get("align_weight", 0.0),
+                    direct_rollout=trained.get("direct_rollout", base.direct_rollout))
     stored = json.loads(REPORT.read_text())
     encoder = Encoder(base).to(DEVICE)
     load(ENCODER, replace(base, batch=stored["batch"], seed=stored["seed"]),

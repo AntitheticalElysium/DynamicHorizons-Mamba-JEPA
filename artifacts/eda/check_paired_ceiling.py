@@ -83,9 +83,14 @@ def _outcome(heads: Heads, agent: torch.Tensor, reward: float, alive: float) -> 
 
 def _load(folder: Path, base: Config) -> tuple[World, Heads, Config]:
     trained = json.loads((folder / "training_report.json").read_text())
+    if "sequence" in trained:
+        base = replace(base, sequence=trained["sequence"],
+                       sequence_long=trained["sequence_long"],
+                       dynamics_context=trained["dynamics_context"])
     config = replace(base, transition="direct",
                      time_mixer=trained.get("time_mixer", "attention"),
-                     align_weight=trained.get("align_weight", 0.0))
+                     align_weight=trained.get("align_weight", 0.0),
+                     direct_rollout=trained.get("direct_rollout", base.direct_rollout))
     world, heads = World(config).to(DEVICE), Heads(config).to(DEVICE)
     load(folder / "phase2_final.pt", config, part0=world, part1=heads)
     return world.eval(), heads.eval(), config
