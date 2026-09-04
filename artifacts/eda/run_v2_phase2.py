@@ -112,8 +112,17 @@ def main() -> None:
     # another 10k steps, so inheriting the Phase-1B alignment weight is what stops this
     # phase from quietly undoing the intervention it is meant to carry.
     trained = json.loads((source / "training_report.json").read_text())
+    # Sequence and rollout depth are architectural: `dynamics_context` bounds the world's
+    # attention memory, and `direct_rollout` sets how many blocks `_direct_loss` generates.
+    # A Phase 2 that inherited only `align_weight` would rebuild a 16/64/48 world around a
+    # 32/128/96 checkpoint and fail -- or worse, train the wrong rollout depth.
+    if "sequence" in trained:
+        base = replace(base, sequence=trained["sequence"],
+                       sequence_long=trained["sequence_long"],
+                       dynamics_context=trained["dynamics_context"])
     config = replace(base, transition="direct", time_mixer=args.arm,
-                     align_weight=trained.get("align_weight", 0.0))
+                     align_weight=trained.get("align_weight", 0.0),
+                     direct_rollout=trained.get("direct_rollout", base.direct_rollout))
     world = World(config).to(DEVICE)
     world.load_state_dict(torch.load(source / "world.pt", weights_only=False)["world"])
 
@@ -138,6 +147,8 @@ def main() -> None:
         {"phase": 2, "arm": args.arm, "time_mixer": args.arm, "steps": args.steps,
          "counterfactual_roots": args.roots, "counterfactual_mass": args.mass,
          "align_weight": config.align_weight, "direct_rollout": config.direct_rollout,
+         "sequence": config.sequence, "sequence_long": config.sequence_long,
+         "dynamics_context": config.dynamics_context,
          "paired_semantic": args.paired_semantic, "freeze_world": args.freeze_world,
          "rollout_only": args.rollout_only,
          "source": str(source), "out": str(out), "seed": config.seed}, indent=2))
