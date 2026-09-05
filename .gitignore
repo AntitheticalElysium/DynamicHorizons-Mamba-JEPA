@@ -265,3 +265,6 @@ artifacts/eda/broad_forks_v2/
 artifacts/paired_ceiling/
 
 artifacts/rollout_ceiling/
+
+artifacts/multiworld_drift/
+artifacts/multiworld_entropy/

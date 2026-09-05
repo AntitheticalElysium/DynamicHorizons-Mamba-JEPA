@@ -166,6 +166,13 @@ def main() -> None:
                                 int(observed.argmax()) == int(generated.argmax())),
                             # Secondary: a shared yardstick that favours whichever head
                             # happens to resemble the teacher.
+                            # A flatter head has lower KL to another flat head while its
+                            # argmax flips more readily, which would explain a KL win
+                            # alongside a top-1 loss without any gain in semantics.
+                            "entropy_observed": float(
+                                -(observed.clamp_min(1e-12) * observed.clamp_min(1e-12).log()).sum()),
+                            "entropy_generated": float(
+                                -(generated.clamp_min(1e-12) * generated.clamp_min(1e-12).log()).sum()),
                             "kl_teacher_observed": _kl(target, observed),
                             "kl_teacher_generated": _kl(target, generated),
                             "top1_teacher_generated": float(
@@ -200,7 +207,9 @@ def _report(rows, names, depths, degenerate=None) -> None:
         return out
 
     reported = [("kl_observed_generated", "KL(observed||generated), within arm"),
-                ("top1_observed_generated", "top-1 observed vs generated, within arm")]
+                ("top1_observed_generated", "top-1 observed vs generated, within arm"),
+                ("entropy_observed", "policy entropy on observed states"),
+                ("entropy_generated", "policy entropy on generated states")]
     if not degenerate:
         reported += [("kl_teacher_generated", "KL(teacher||generated), secondary"),
                      ("top1_teacher_generated", "top-1 teacher vs generated, secondary")]
