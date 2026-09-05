@@ -1,4 +1,6 @@
 import copy
+from contextlib import nullcontext
+import math
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -10,44 +12,59 @@ from torch.nn import functional as F
 from .actor_critic import actor_loss, critic_loss, lambda_returns
 from .agent import Heads, _distribution_loss, head_loss, head_targets, paired_terminal_loss
 from .config import Config
+from .lewm_config import LeWMConfig
+from .cache import cache_latents, cache_latents_to_store, _cache_digest
 from .data import (
-    FORMAT,
-    STORE_FORMAT,
     Batch,
+    JointSampler,
     Episode,
     EpisodeCorpus,
-    atomic_manifest,
-    load_episodes,
-    patchify,
     sample_batch,
     sample_terminal_batch,
-    save_episode_shard,
 )
 from .imagination import imagine
-from .checkpoint import load, save
-from .representation import Decoder, Encoder, pack, reconstruction_loss
-from .sources import source_digests
-from .state import WorldState
+from .checkpoint import load, save, restore_lewm_bundle, save_lewm_bundle, publish_lewm_latest
+from .representation import Decoder, Encoder, reconstruction_loss
+from .sources import tensor_state_digest
+from .state import WorldState, repeat_memory as _repeat_memory
+from .lewm import SIGReg, joint_loss
+from .world_api import ModelBundle
 from .transition import advance, World, commit_inputs, transition_loss
 
 
-def optimizer(modules: list[nn.Module], config: Config) -> torch.optim.AdamW:
-    """The only place parameter groups are built, and the only place Mamba-2's
-    no-weight-decay contract is honoured.
+def optimizer(modules: list[nn.Module], config, *, exclude_vectors: bool = False) -> torch.optim.AdamW:
+    """One AdamW grouping implementation, with explicitly different recipe policies.
 
-    Upstream marks A_log, D and dt_bias exempt. Decaying them is an asymmetry
-    applied to exactly one arm of the single comparison the project exists to
-    make, which is why it cannot live at a call site.
+    Legacy phases retain their historical decay of ordinary vectors. Joint LeWM
+    exempts vectors/biases as declared in TC-12. Both honor upstream Mamba's
+    `_no_weight_decay`; order is preserved for optimizer state and numerical parity.
     """
     decayed, exempt = [], []
     for module in modules:
-        for parameter in module.parameters():
+        for name, parameter in module.named_parameters():
             if parameter.requires_grad:
-                (exempt if getattr(parameter, "_no_weight_decay", False) else decayed).append(parameter)
+                no_decay = getattr(parameter, "_no_weight_decay", False) or (
+                    exclude_vectors and (parameter.ndim < 2 or name.endswith("bias")))
+                (exempt if no_decay else decayed).append(parameter)
     groups = [{"params": decayed, "weight_decay": config.weight_decay}]
     if exempt:
         groups.append({"params": exempt, "weight_decay": 0.0})
-    return torch.optim.AdamW(groups, lr=config.learning_rate)
+    return torch.optim.AdamW(groups, lr=config.learning_rate,
+                             betas=getattr(config, "betas", (0.9,0.999)),
+                             eps=getattr(config, "optimizer_eps", 1e-8))
+
+
+def optimizer_step(optimiser, loss, parameters, *, learning_rate: float, grad_clip: float,
+                   strict: bool = False, zero_grad: bool = True):
+    """Shared backward/clipping/update; callers own objectives and schedules."""
+    for group in optimiser.param_groups:
+        group["lr"] = learning_rate
+    if zero_grad:
+        optimiser.zero_grad()
+    loss.backward()
+    norm = torch.nn.utils.clip_grad_norm_(parameters, grad_clip, error_if_nonfinite=strict)
+    optimiser.step()
+    return norm
 
 
 def train_representation(
@@ -93,106 +110,6 @@ def train_representation(
     return encoder, decoder.eval(), cache_latents(encoder, episodes, config)
 
 
-@torch.no_grad()
-def _cache_episode(
-    encoder: Encoder, episode: Episode, config: Config, digest: str
-) -> Episode:
-    if episode.observations is None:
-        raise ValueError("raw observations are required to build a latent cache")
-    frames = patchify(episode.observations[None], config.patch).to(config.device)
-    latents, memory = [], None
-    for start in range(0, frames.shape[1], config.sequence_long):
-        chunk = frames[:, start : start + config.sequence_long]
-        z, memory, _ = encoder(chunk, memory, offset=start)
-        latents.append(z)
-    packed = pack(torch.cat(latents, dim=1), config)[0].cpu()
-    return replace(episode, latents=packed, latent_digest=digest)
-
-
-@torch.no_grad()
-def cache_latents(
-    encoder: Encoder,
-    episodes: list[Episode] | EpisodeCorpus,
-    config: Config,
-) -> list[Episode] | EpisodeCorpus:
-    """Scan each episode once under the declared window, at mask probability zero.
-
-    Chunked with memory carried, not one dense call: an episode runs to thousands
-    of frames and a single scan builds an attention problem that size. The windowed
-    mask makes chunked and fully recurrent encoding produce the same latent, which
-    `scan_step_parity` asserts, so the cheap path is also the faithful one.
-    """
-    digest = _cache_digest(encoder, config)
-    cached = [_cache_episode(encoder, episode, config, digest) for episode in episodes]
-    if isinstance(episodes, EpisodeCorpus):
-        return EpisodeCorpus(cached, source=episodes.source)
-    return cached
-
-
-@torch.no_grad()
-def cache_latents_to_store(
-    encoder: Encoder,
-    episodes: list[Episode] | EpisodeCorpus,
-    config: Config,
-    out: Path,
-    *,
-    source_contract: dict,
-    shard_episodes: int = 32,
-) -> EpisodeCorpus:
-    """Write a resumable mmap latent cache without retaining raw observations."""
-    if shard_episodes < 1:
-        raise ValueError("shard_episodes must be positive")
-    digest = _cache_digest(encoder, config)
-    manifest_path = out / "manifest.json"
-    contract = {
-        "format": STORE_FORMAT,
-        "kind": "d4mj_latent_cache_v1",
-        "cache_digest": digest,
-        "source": source_contract,
-        "planned_episodes": len(episodes),
-        "shard_episodes": shard_episodes,
-    }
-    if manifest_path.exists():
-        manifest = json.loads(manifest_path.read_text())
-        if {key: manifest.get(key) for key in contract} != contract:
-            raise ValueError("latent-cache contract changed")
-        if manifest.get("complete"):
-            return load_episodes(out, digest=digest)
-    else:
-        out.mkdir(parents=True, exist_ok=True)
-        manifest = contract | {
-            "complete": False,
-            "episodes": 0,
-            "transitions": 0,
-            "terminal_episodes": 0,
-            "shards": [],
-        }
-        atomic_manifest(manifest_path, manifest)
-
-    start = int(manifest["episodes"])
-    if start > len(episodes):
-        raise ValueError("latent cache contains more episodes than its source")
-    for first in range(start, len(episodes), shard_episodes):
-        last = min(first + shard_episodes, len(episodes))
-        cached = []
-        for episode in episodes[first:last]:
-            value = _cache_episode(encoder, episode, config, digest)
-            cached.append(replace(value, observations=None))
-        shard_path = out / f"shard-{len(manifest['shards']):06d}.pt"
-        if shard_path.exists():
-            raise FileExistsError(f"unregistered latent-cache shard exists: {shard_path}")
-        record = save_episode_shard(shard_path, cached)
-        manifest["shards"].append(record)
-        manifest["episodes"] += record["episodes"]
-        manifest["transitions"] += record["transitions"]
-        manifest["terminal_episodes"] += record["terminal_episodes"]
-        atomic_manifest(manifest_path, manifest)
-        print(f"latent cache: {manifest['episodes']}/{len(episodes)} episodes", flush=True)
-    manifest["complete"] = True
-    atomic_manifest(manifest_path, manifest)
-    return load_episodes(out, digest=digest)
-
-
 def train_dynamics(episodes: list[Episode], steps: int, config: Config, checkpoint=None) -> World:
     """Phase 1B, on the frozen cache. Agent slots are already present and masked,
     so no state shape changes at the Phase 2 boundary."""
@@ -213,23 +130,6 @@ def train_dynamics(episodes: list[Episode], steps: int, config: Config, checkpoi
         if checkpoint is not None and ((step + 1) % config.checkpoint_every == 0 or step + 1 == steps):
             _checkpoint(checkpoint, config, [world, optimiser], balance, streams, step + 1, f"1B:{steps}")
     return world
-
-
-def _repeat_memory(memory, roots: int, actions: int):
-    """Each root's memory repeated across its actions.
-
-    Memory is (roots x tokens, ...) -- token-major -- so repeating dim 0 scrambles
-    history without erroring. Unflatten first.
-    """
-    out = []
-    for pair in memory:
-        widened = []
-        for tensor in pair:
-            rest = tensor.shape[1:]
-            widened.append(tensor.view(roots, -1, *rest)
-                           .repeat_interleave(actions, dim=0).reshape(-1, *rest))
-        out.append(tuple(widened))
-    return tuple(out)
 
 
 def _counterfactual_path(world: World, heads: Heads, batch: dict, rng, config: Config):
@@ -591,43 +491,6 @@ def _balance(
     return total
 
 
-def _cache_digest(encoder: Encoder, config: Config) -> str:
-    """Identity of the latent cache: the whole latent function, not just its weights.
-
-    Every field the encoder's forward pass depends on is included. Weights alone are
-    not identity -- two encoders with identical parameters but different resolution
-    and patch layout produced the same digest, and the cache from one would load
-    against the other. The time mixer is excluded because the tokenizer is shared
-    and always attention.
-    """
-    import hashlib
-
-    shape = (
-        config.patch,
-        config.resolution,
-        config.channels,
-        config.n_patches,
-        config.window,
-        config.n_latents,
-        config.d_bottleneck,
-        config.packing,
-        config.d_model_encoder,
-        config.depth_encoder,
-        config.n_heads_encoder,
-        config.time_every,
-        config.receptive_field,
-        FORMAT,
-    )
-    weights = hashlib.sha256()
-    for name, tensor in sorted(encoder.state_dict().items()):
-        weights.update(name.encode())
-        weights.update(tensor.detach().cpu().numpy().tobytes())
-    visual = source_digests(replace(config, time_mixer="attention"))
-    return hashlib.sha256(repr((shape, visual, weights.hexdigest())).encode()).hexdigest()[:16]
-
-
-
-
 def _generators(config: Config, phase: int) -> tuple[torch.Generator, torch.Generator]:
     """A CPU generator for the sampler and a device generator for model noise, each
     seeded independently. Drawing one seed from the other fails outright when the
@@ -654,11 +517,122 @@ def _to(batch: Batch, device: str) -> Batch:
 
 
 def _update(optimiser, loss, modules, config: Config, step: int) -> None:
-    for group in optimiser.param_groups:
-        group["lr"] = config.learning_rate * min(1.0, (step + 1) / config.warmup)
-    optimiser.zero_grad()
-    loss.backward()
-    torch.nn.utils.clip_grad_norm_(
-        [p for module in modules for p in module.parameters()], config.grad_clip
-    )
-    optimiser.step()
+    optimizer_step(optimiser, loss, [p for module in modules for p in module.parameters()],
+                   learning_rate=config.learning_rate * min(1.0, (step + 1) / config.warmup),
+                   grad_clip=config.grad_clip)
+
+
+def set_phase_mode(bundle: ModelBundle, phase: str):
+    if phase == "joint":
+        if bundle.encoder._frozen:
+            raise ValueError("phase_handoff: cannot silently unfreeze an exported encoder")
+        bundle.encoder.train().requires_grad_(True)
+        bundle.world.train().requires_grad_(True)
+        bundle.world.agent_readout.requires_grad_(False)
+    elif phase == "export":
+        bundle.encoder.freeze()
+        bundle.world.eval()
+    else:
+        raise ValueError(f"phase_gate: {phase} is outside implemented M0-M3")
+
+
+def joint_optimizer(bundle: ModelBundle):
+    return optimizer([bundle.encoder,bundle.world], bundle.config.joint, exclude_vectors=True)
+
+
+def learning_rate(config: LeWMConfig, update: int) -> float:
+    """Zero-based optimizer update; pausing never changes the original schedule."""
+    j = config.joint
+    if not 0 <= update < j.steps:
+        raise ValueError("update is outside the sealed schedule")
+    if update < j.warmup:
+        return j.learning_rate * (update + 1) / j.warmup
+    progress = (update - j.warmup) / max(1, j.steps - j.warmup - 1)
+    return j.min_learning_rate + 0.5 * (j.learning_rate-j.min_learning_rate) * (1 + math.cos(math.pi*progress))
+
+
+def autocast_context(config: LeWMConfig):
+    return (torch.autocast(device_type=config.runtime.device, dtype=torch.bfloat16)
+            if config.runtime.precision == "bf16" else nullcontext())
+
+
+def train_joint(episodes, config: LeWMConfig, output: str | Path, *, dataset_contract: dict,
+                gate_report: dict, stop_at: int | None = None, resume: str | Path | None = None,
+                bundle: ModelBundle | None = None):
+    from .gates import require_joint_gates, ComponentGateError
+
+    require_joint_gates(gate_report, config, dataset_contract)
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    if resume is None and ((output / "latest.pt").exists() or (output / "metrics.jsonl").exists()):
+        raise ValueError("run_output: existing training output requires explicit resume")
+    default_end = config.joint.screen_step if config.runtime.purpose == "research" else config.joint.steps
+    end = default_end if stop_at is None else stop_at
+    if not 0 < end <= config.joint.steps:
+        raise ValueError("stop_at pauses within the full declared schedule; it cannot extend the budget")
+    if config.runtime.purpose == "research" and end > config.joint.screen_step:
+        raise ComponentGateError("joint_screen", "G1 screening is not implemented; M0-M3 stops at the screening checkpoint")
+    bundle = ModelBundle.create(config) if bundle is None else bundle
+    if bundle.config != config:
+        raise ValueError("bundle recipe differs from training recipe")
+    set_phase_mode(bundle, "joint")
+    optimizer = joint_optimizer(bundle)
+    sampler = JointSampler(episodes, config, torch.Generator().manual_seed(config.seed + 1))
+    projection_rng = torch.Generator(device=config.runtime.device).manual_seed(config.seed + 1001)
+    initial_identity = {"encoder": tensor_state_digest(bundle.encoder.state_dict()),
+                        "world": tensor_state_digest(bundle.world.state_dict())}
+    begin = 0
+    if resume is not None:
+        stored = restore_lewm_bundle(resume, bundle, dataset_contract=dataset_contract,
+                                     optimizer=optimizer, sampler=sampler, projection_rng=projection_rng)
+        begin, initial_identity = stored["step"], stored["initial_identity"]
+    if end <= begin:
+        raise ValueError("stop_at must be after the restored optimizer step")
+    log = output / "metrics.jsonl"
+    if log.exists():
+        rows = [json.loads(line) for line in log.read_text().splitlines()]
+        if rows and rows[-1]["update"] != begin:
+            raise ValueError("resume_history: resume at the last logged update or use a fresh output directory")
+    if any(int(p.stem.split("-")[-1]) > begin for p in output.glob("step-*.pt")):
+        raise ValueError("resume_history: newer immutable snapshots exist; use a fresh output directory")
+    regularizer = SIGReg(config.joint.knots, config.joint.projections).to(config.runtime.device)
+    parameters = [p for g in optimizer.param_groups for p in g["params"]]
+    metrics = []
+    for update in range(begin, end):
+        batch = sampler.sample().to(config.runtime.device)
+        optimizer.zero_grad(set_to_none=True)
+        with autocast_context(config):
+            loss = joint_loss(bundle.encoder, bundle.world, batch.frames, batch.actions,
+                              regularizer, projection_rng, config)
+        if not bool(torch.isfinite(loss.total)):
+            raise RuntimeError(f"joint_objective: nonfinite loss at update {update}; stop this component")
+        lr = learning_rate(config, update)
+        norm = optimizer_step(optimizer, loss.total, parameters, learning_rate=lr,
+                              grad_clip=config.joint.grad_clip, strict=True, zero_grad=False)
+        with torch.no_grad():
+            z = loss.latent.float()[:, :, 0]
+            residual = z-z.mean(1, keepdim=True)
+            row = {"update": update+1, "prediction": float(loss.prediction),
+                   "regularization": float(loss.regularization), "loss": float(loss.total),
+                   "gradient_norm": float(norm), "learning_rate": lr,
+                   "latent_mean": float(z.mean()), "latent_std": float(z.std()),
+                   "residual_std": float(residual.std()), "actual_batch": len(batch.episode_ids),
+                   "unique_episodes": len(set(batch.episode_ids)),
+                   "windows": list(zip(batch.episode_ids, batch.starts.tolist()))}
+        metrics.append(row)
+        with (output / "metrics.jsonl").open("a") as stream:
+            stream.write(json.dumps(row, allow_nan=False) + "\n")
+        if ((update+1) % config.joint.checkpoint_every == 0
+                or update+1 in (config.joint.screen_step, end)):
+            snapshot = output / f"step-{update+1:06d}.pt"
+            save_lewm_bundle(snapshot, bundle, step=update+1,
+                             dataset_contract=dataset_contract, initial_identity=initial_identity,
+                             optimizer=optimizer, sampler=sampler, projection_rng=projection_rng,
+                             gate_report=gate_report)
+            publish_lewm_latest(snapshot)
+    return bundle, metrics
+
+
+def freeze_encoder(bundle: ModelBundle):
+    set_phase_mode(bundle, "export")
+    return bundle.encoder

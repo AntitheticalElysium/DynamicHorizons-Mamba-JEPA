@@ -1,5 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from typing import Literal
+import hashlib
+import json
+from pathlib import Path
 
 Transition = Literal["flow", "direct"]
 TimeMixer = Literal["attention", "mamba"]
@@ -232,3 +235,36 @@ class Config:
     def step_index(self) -> int:
         """Committed and observed blocks carry the finest step size d_min."""
         return self.n_step_bins - 1
+
+
+def canonical_json(value) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def recipe_dict(config) -> dict:
+    return json.loads(canonical_json(asdict(config)))
+
+
+def recipe_digest(config) -> str:
+    return hashlib.sha256(canonical_json(recipe_dict(config)).encode()).hexdigest()
+
+
+def config_from_dict(values: dict):
+    """Explicit family dispatch; incompatible flat/nested settings never mingle."""
+    if not isinstance(values, dict):
+        raise ValueError("recipe must be an object")
+    if values.get("family") == "lewm_mamba":
+        from .lewm_config import config_from_dict as parse_joint
+        return parse_joint(values)
+    unknown = set(values) - {field.name for field in fields(Config)}
+    if unknown:
+        raise ValueError(f"unknown Config fields: {sorted(unknown)}")
+    values = dict(values)
+    for field in fields(Config):
+        if field.name in values and isinstance(field.default, tuple):
+            values[field.name] = tuple(values[field.name])
+    return Config(**values)
+
+
+def load_recipe(path: str | Path):
+    return config_from_dict(json.loads(Path(path).read_text()))

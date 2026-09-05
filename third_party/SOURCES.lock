@@ -13,6 +13,8 @@ fmi-basel__Dreamer-CDP  https://github.com/fmi-basel/Dreamer-CDP.git  a851fa3e3d
 kaland313__CNN-JEPA  https://github.com/kaland313/CNN-JEPA  b7b246c27e2f073b2596da501a6d64c004f67062  
 leor-c__horizon-imagination  https://github.com/leor-c/horizon-imagination.git  c79ec5e2450be22711c7d717e49326edf77061f2  
 lucas-maes__le-wm  https://github.com/lucas-maes/le-wm.git  8edfeb336732b5f3ce7b8b210d0ba370a09e2cac  
+# LeWM's ViT constructor and ImageNet preprocessing constants. MIT, LICENSE at pin.
+galilai-group__stable-pretraining  https://github.com/galilai-group/stable-pretraining.git  9aa93f8b6153eebb73f57d4853ccf8a13d848310
 MLO-lab__LeVJEPA  https://github.com/MLO-lab/LeVJEPA.git  941526c428aa513a5bdfa38697724fda794d8496
 nicklashansen__dreamer4  https://github.com/nicklashansen/dreamer4.git  b8abafbf4da72c59b6aa09f8499ccde0d6a37fd6  
 nicklashansen__mmbench2  https://github.com/nicklashansen/mmbench2.git  3dda6ea5bc60382ad9e1dcd1c6c3af67d69326a9  

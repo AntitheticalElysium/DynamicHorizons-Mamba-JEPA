@@ -1,0 +1,20 @@
+{
+  "scope": "full B128/F4/J1024 BF16 architecture, verification only; four updates of unchanged 10000-update schedule",
+  "state_max_abs": {
+    "encoder": 0.0,
+    "world": 0.0
+  },
+  "metrics_exact": true,
+  "screen_sha256_preserved": "683684d6c248bb6ea7c72564f20873d0a58e86f673282a3b2edbc83661b89b9a",
+  "snapshots": {
+    "schema": "d4mj_lewm_checkpoints_v1",
+    "snapshots": {
+      "step-000002.pt": "683684d6c248bb6ea7c72564f20873d0a58e86f673282a3b2edbc83661b89b9a",
+      "step-000004.pt": "71a44bbec73de7288789362a8ccb94799a0ac1c03659dab925da77cc695804ac"
+    },
+    "latest": "step-000004.pt"
+  },
+  "recipe_id": "06a7d43534d3a09cb5b50b15aa9ddf9a26e0302bb6d1ab913dca0aef24225626",
+  "cuda_device": "NVIDIA GeForce RTX 3060 Laptop GPU",
+  "m4_authorized": false
+}

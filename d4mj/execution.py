@@ -7,10 +7,10 @@ import torch
 
 from .agent import Heads
 from .config import Config
-from .data import patchify
 from .env import reset, step
 from .representation import Encoder
-from .transition import World, observe
+from .transition import World
+from .world_api import ModelBundle
 
 
 @dataclass(frozen=True)
@@ -47,19 +47,23 @@ def run_episode(
     secondary (S52). Policy, flow corruption and environment draw from three
     separately seeded streams, so the arms do not differ by their own randomness.
     """
+    bundle = ModelBundle.from_models(config, encoder, world)
+    bundle.require_control()
     device = config.device
-    world, encoder, heads = world.to(device).eval(), encoder.to(device).eval(), heads.to(device).eval()
+    bundle.world.to(device)
+    bundle.encoder.to(device)
+    bundle.eval()
+    heads = heads.to(device).eval()
     rng = torch.Generator(device=device).manual_seed(seed + 2**21)
     policy_rng = torch.Generator(device=device).manual_seed(seed + 2**20)
     observation, env_state = reset(seed)
     state, total = None, 0.0
-    action = torch.full((1, 1), config.n_actions, dtype=torch.long, device=device)
+    action = None
     horizon = config.horizon_eval if limit is None else limit
 
     with torch.no_grad():
         for index in range(horizon):
-            patches = patchify(observation[None, None], config.patch).to(device)
-            state, agent = observe(world, encoder, state, action, patches, rng, config)
+            state, agent = bundle.observe(state, action, observation[None, None], rng)
             logits = heads(agent)["policy"][:, -1, 0]
             choice = (
                 int(logits.argmax(-1))

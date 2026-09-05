@@ -7,8 +7,29 @@ from torch.utils.flop_counter import FlopCounterMode
 from .agent import Heads, head_targets
 from .config import Config
 from .data import Batch
-from .state import WorldState
 from .transition import World, advance, commit_inputs, initial, transition_loss
+from .world_api import ModelBundle
+
+
+@torch.no_grad()
+def rollout_predictions(bundle, latents, actions, context, rng=None, *, first_action=None):
+    """Observed prefix followed by generated successors through the deployed API.
+
+    Actions are outgoing: T latents have T-1 transitions. Legacy windows may
+    supply their first incoming action; LeWM consumes only completed pairs.
+    This is a mechanical diagnostic, not authorization for policy control.
+    """
+    if not 1 <= context < latents.shape[1]:
+        raise ValueError("context must leave at least one successor")
+    if actions.shape != (latents.shape[0], latents.shape[1] - 1):
+        raise ValueError("rollout requires T latents and T-1 outgoing actions")
+    state = bundle.prefill(latents[:, :context], actions[:, :context-1], rng,
+                           first_action=first_action)
+    predictions = []
+    for step in range(context, latents.shape[1]):
+        state, _ = bundle.advance(state, actions[:, step-1:step], rng)
+        predictions.append(state.latent)
+    return torch.cat(predictions, dim=1), state
 
 
 @torch.no_grad()
@@ -32,14 +53,11 @@ def multistep_error(
     context = min(config.dynamics_context, blocks - 1) if context is None else context
     assert 1 <= context < blocks, f"context {context} leaves nothing to roll over {blocks} blocks"
 
-    committed, conditioning = commit_inputs(batch.latents[:, :context], rng, config)
-    features, _, memory = world(None, batch.led_to_action[:, :context], committed, conditioning)
-    state = WorldState(batch.latents[:, context - 1 : context], memory, context, features[:, -1:])
-
-    report: dict[str, list[float]] = {"mean_error": []}
-    for step in range(context, blocks):
-        state, _ = advance(world, state, batch.led_to_action[:, step : step + 1], rng, config)
-        report["mean_error"].append(float((state.latent - batch.latents[:, step : step + 1]).pow(2).mean()))
+    bundle = ModelBundle.from_models(config, None, world)
+    predicted, state = rollout_predictions(bundle, batch.latents, batch.led_to_action[:, 1:],
+                                          context, rng, first_action=batch.led_to_action[:, :1])
+    report = {"mean_error": [float((predicted[:, i:i+1] - batch.latents[:, context+i:context+i+1])
+                                  .pow(2).mean()) for i in range(blocks-context)]}
 
     if successors is not None:
         gap = (state.latent[:, 0, None] - successors).pow(2).flatten(2).mean(-1)
@@ -60,10 +78,10 @@ def latent_stats(world: World, batch: Batch, rng: torch.Generator, config: Confi
     """
     blocks = batch.latents.shape[1]
     context = min(config.dynamics_context, blocks - 1)
-    committed, conditioning = commit_inputs(batch.latents[:, :context], rng, config)
-    features, _, memory = world(None, batch.led_to_action[:, :context], committed, conditioning)
-    state = WorldState(batch.latents[:, context - 1 : context], memory, context, features[:, -1:])
-    state, _ = advance(world, state, batch.led_to_action[:, context : context + 1], rng, config)
+    bundle = ModelBundle.from_models(config, None, world)
+    _, state = rollout_predictions(bundle, batch.latents[:, :context+1],
+                                   batch.led_to_action[:, 1:context+1], context, rng,
+                                   first_action=batch.led_to_action[:, :1])
 
     real, predicted = batch.latents[:, context : context + 1], state.latent
     return {

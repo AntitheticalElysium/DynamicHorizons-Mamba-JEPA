@@ -41,3 +41,9 @@
 2605.09241.pdf | Sub-JEPA: Subspace Gaussian Regularization for Stable End-to-End World Models | f88624aa985b9303ddce94a03f8d8bba22f535508e695a3b1b6256c4e7fcc8f6
 2605.26379.pdf | When Does LeJEPA Learn a World Model? | 912f41e8c3fe5389f2136362533e4c7fc3695df8ad1b796adb285a49bb11f676
 2605.31111.pdf | Subspace-Decomposed JEPAs: Disentangling Progression and Content in Latent World Models (SD-JEPA) | c9510496e19e31585d2160514dcdfc333e01fb00be3ab8d917a73a4b37e0c2ef
+
+# TC-LeWM architecture review (2026-09-05), arXiv v3 dated 2026-08-26.
+# Download: https://arxiv.org/pdf/2607.26924v3
+# Official project https://ryuuchou17.github.io/tclewm/ lists code as coming soon.
+# Base LeWM implementation is already pinned in SOURCES.lock; no TC code is vendored.
+2607.26924v3-tclewm.pdf | Temporally Centered SIGReg Improves LeWorldModel Representations for Robot Policy Learning | b15777f14c11b8196a32665a037822425e0016dc7682852ff11c79b4e52b9ef3
