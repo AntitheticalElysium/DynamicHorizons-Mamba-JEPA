@@ -556,10 +556,34 @@ def autocast_context(config: LeWMConfig):
             if config.runtime.precision == "bf16" else nullcontext())
 
 
+def _joint_components(episodes, config, bundle=None):
+    bundle = ModelBundle.create(config) if bundle is None else bundle
+    if bundle.config != config:
+        raise ValueError("bundle recipe differs from training recipe")
+    set_phase_mode(bundle, "joint")
+    optimiser = joint_optimizer(bundle)
+    sampler = JointSampler(episodes, config, torch.Generator().manual_seed(config.seed + 1))
+    projection_rng = torch.Generator(device=config.runtime.device).manual_seed(config.seed + 1001)
+    identity = {name: tensor_state_digest(getattr(bundle,name).state_dict()) for name in ("encoder","world")}
+    return bundle, optimiser, sampler, projection_rng, identity
+
+
+def initialize_joint(episodes, config, output, *, dataset_contract, gate_report):
+    """Persist the exact initial weights and streams as an immutable resume parent."""
+    from .gates import require_joint_gates
+    require_joint_gates(gate_report,config,dataset_contract)
+    bundle, optimiser, sampler, rng, identity = _joint_components(episodes,config)
+    path = Path(output)/"step-000000.pt"
+    save_lewm_bundle(path,bundle,step=0,dataset_contract=dataset_contract,initial_identity=identity,
+                     optimizer=optimiser,sampler=sampler,projection_rng=rng,gate_report=gate_report)
+    publish_lewm_latest(path)
+    return path, identity
+
+
 def train_joint(episodes, config: LeWMConfig, output: str | Path, *, dataset_contract: dict,
                 gate_report: dict, stop_at: int | None = None, resume: str | Path | None = None,
-                bundle: ModelBundle | None = None):
-    from .gates import require_joint_gates, ComponentGateError
+                bundle: ModelBundle | None = None, screen_report: dict | None = None):
+    from .gates import require_joint_gates, require_joint_screen, ComponentGateError
 
     require_joint_gates(gate_report, config, dataset_contract)
     output = Path(output)
@@ -571,16 +595,10 @@ def train_joint(episodes, config: LeWMConfig, output: str | Path, *, dataset_con
     if not 0 < end <= config.joint.steps:
         raise ValueError("stop_at pauses within the full declared schedule; it cannot extend the budget")
     if config.runtime.purpose == "research" and end > config.joint.screen_step:
-        raise ComponentGateError("joint_screen", "G1 screening is not implemented; M0-M3 stops at the screening checkpoint")
-    bundle = ModelBundle.create(config) if bundle is None else bundle
-    if bundle.config != config:
-        raise ValueError("bundle recipe differs from training recipe")
-    set_phase_mode(bundle, "joint")
-    optimizer = joint_optimizer(bundle)
-    sampler = JointSampler(episodes, config, torch.Generator().manual_seed(config.seed + 1))
-    projection_rng = torch.Generator(device=config.runtime.device).manual_seed(config.seed + 1001)
-    initial_identity = {"encoder": tensor_state_digest(bundle.encoder.state_dict()),
-                        "world": tensor_state_digest(bundle.world.state_dict())}
+        require_joint_screen(screen_report,config,dataset_contract,resume)
+    if screen_report is not None:
+        gate_report = gate_report | {"joint_screen":screen_report}
+    bundle, optimizer, sampler, projection_rng, initial_identity = _joint_components(episodes,config,bundle)
     begin = 0
     if resume is not None:
         stored = restore_lewm_bundle(resume, bundle, dataset_contract=dataset_contract,
@@ -622,6 +640,9 @@ def train_joint(episodes, config: LeWMConfig, output: str | Path, *, dataset_con
         metrics.append(row)
         with (output / "metrics.jsonl").open("a") as stream:
             stream.write(json.dumps(row, allow_nan=False) + "\n")
+        if (update+1) % 100 == 0:
+            print(json.dumps({"variant":config.variant,"update":update+1,"target":end,
+                              "loss":row["loss"],"prediction":row["prediction"]}),flush=True)
         if ((update+1) % config.joint.checkpoint_every == 0
                 or update+1 in (config.joint.screen_step, end)):
             snapshot = output / f"step-{update+1:06d}.pt"

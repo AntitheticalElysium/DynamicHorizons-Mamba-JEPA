@@ -253,6 +253,9 @@ def config_from_dict(values: dict):
     """Explicit family dispatch; incompatible flat/nested settings never mingle."""
     if not isinstance(values, dict):
         raise ValueError("recipe must be an object")
+    if values.get("schema") == "d4mj_joint_screen_v1":
+        from .lewm_config import ScreenConfig, _settings
+        return _settings(ScreenConfig, values)
     if values.get("family") == "lewm_mamba":
         from .lewm_config import config_from_dict as parse_joint
         return parse_joint(values)

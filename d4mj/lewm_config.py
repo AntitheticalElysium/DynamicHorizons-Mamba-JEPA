@@ -97,6 +97,49 @@ class LeWMConfig:
         validate_recipe(self)
 
 
+@dataclass(frozen=True)
+class ScreenConfig:
+    """Evaluation-only G1 choices, sealed separately from the model recipe."""
+
+    schema: str = "d4mj_joint_screen_v1"
+    seed: int = 20260906
+    train_episodes: int = 256
+    dev_episodes: int = 128
+    windows_per_episode: int = 4
+    encode_batch: int = 32
+    probe_hidden: int = 128
+    probe_steps: int = 200
+    probe_batch: int = 256
+    probe_lr: float = 1e-3
+    probe_decay: float = 1e-2
+    minimum_positive: int = 20
+    minimum_negative: int = 20
+    bootstrap_draws: int = 1000
+    auc_margin: float = .03
+    variance_floor: float = 1e-10
+
+    def __post_init__(self):
+        if self.schema != "d4mj_joint_screen_v1":
+            raise ValueError("unsupported joint screen schema")
+        for item in fields(self):
+            value = getattr(self,item.name)
+            if item.type is int and type(value) is not int:
+                raise ValueError(f"screen count {item.name} must be an integer")
+            if item.type is float and (type(value) not in (int,float) or not math.isfinite(value)):
+                raise ValueError(f"screen value {item.name} must be finite numeric")
+        for name, value in asdict(self).items():
+            if name in ("schema", "seed"):
+                continue
+            if isinstance(value, float) and (not math.isfinite(value) or value < 0):
+                raise ValueError(f"invalid screen field {name}")
+            if isinstance(value, int) and (type(value) is not int or value < 1):
+                raise ValueError(f"invalid screen count {name}")
+        if self.dev_episodes < 2 or self.train_episodes < 2 or not 0 < self.auc_margin < 1:
+            raise ValueError("screen needs multiple episodes and a valid retention margin")
+        if self.probe_lr <= 0 or self.variance_floor <= 0:
+            raise ValueError("screen learning rate and variance floor must be positive")
+
+
 def validate_recipe(c: LeWMConfig) -> None:
     if c.schema != "d4mj_lewm_recipe_v1" or c.family != "lewm_mamba":
         raise ValueError("unsupported LeWM recipe schema/family")

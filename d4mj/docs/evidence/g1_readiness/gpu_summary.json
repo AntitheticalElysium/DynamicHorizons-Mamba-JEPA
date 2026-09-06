@@ -1,0 +1,14 @@
+{
+  "scope": "G1 evaluator readiness on full B128/F4/J1024 BF16 models, two verification updates; not research screening",
+  "decision": "continue_joint_budget",
+  "components": {
+    "pair_identity": "pass",
+    "objective_contrast": "pass",
+    "raw_normalization": "pass",
+    "raw_recurrence": "pass",
+    "tc_normalization": "pass",
+    "tc_recurrence": "pass"
+  },
+  "blocked_component": null,
+  "code": 0
+}

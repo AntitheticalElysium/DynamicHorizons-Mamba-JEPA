@@ -54,7 +54,7 @@ Implement M0–M3 as the actual future world-model path: source-audited encoder/
 
 Mechanical gates include source objective values and gradients, framewise frozen-BN parity, source/reference/scan/step output and carry gradients, chunk-boundary and longer-than-training contexts, branch ownership, exact resume, data alignment and cache identity. The target-GPU resource check uses the declared B128/F4/J1024 recipe. Recurrence tests at T257 certify software semantics within a numerical budget; they confer no learned H16 or H257 capability.
 
-M4's recursive distribution shift, predictor BN mode transition and head weighting remain untested. Actor/critic integration and renderer/viewer remain unimplemented. Launches cannot pass those boundaries on M0–M3 evidence. Research training also pauses at its immutable G1 screening checkpoint; the G1 evaluator is future work.
+M4's recursive distribution shift, predictor BN mode transition and head weighting remain untested. Actor/critic integration and renderer/viewer remain unimplemented. Launches cannot pass those boundaries on M0–M3 evidence. Research training also pauses at its immutable G1 screening checkpoint; the [G1 evaluator](TC_LEWM_G1_PROTOCOL.md) now gates continuation, while critical semantic and control validation remain outstanding.
 
 ## 5. What the gates can settle
 

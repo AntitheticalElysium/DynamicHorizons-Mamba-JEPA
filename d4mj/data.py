@@ -586,3 +586,36 @@ class JointSampler:
     def load_state_dict(self, state):
         self.generator.set_state(state["generator"].cpu())
         self.draws = int(state["draws"])
+
+
+def screen_windows(episodes, config: LeWMConfig, screen, split: str) -> dict:
+    """Fixed episode-cluster sample for G1; no FINAL windows or probe-fit leakage."""
+    if split not in ("train", "dev"):
+        raise ValueError("joint screen never selects FINAL")
+    wanted = screen.train_episodes if split == "train" else screen.dev_episodes
+    length = config.joint.frames
+    def order(e):
+        return hashlib.sha256(f"{screen.seed}:{e.episode_id}".encode()).digest()
+    pool = sorted((e for e in episodes if e.split == split and e.uniform_eligible
+                   and len(e)+2-length >= screen.windows_per_episode), key=order)
+    if len(pool) < wanted:
+        raise ValueError(f"screen_coverage: {split} has {len(pool)} eligible episodes, needs {wanted}")
+    frames, actions, labels, valid, ids, starts, clusters = [], [], [], [], [], [], []
+    for cluster, episode in enumerate(pool[:wanted]):
+        rng = torch.Generator().manual_seed(int.from_bytes(order(episode)[:8], "little") % (2**63-1))
+        positions = torch.randperm(len(episode)+2-length, generator=rng)[:screen.windows_per_episode]
+        for start in positions.tolist():
+            end = start+length-1
+            reward = episode.rewards[start:end]
+            event = torch.zeros_like(reward, dtype=torch.bool) if episode.events is None else episode.events[start:end]
+            truth = torch.stack((reward > 0, reward < 0, event, episode.terminated[start:end]), -1)
+            mask = torch.ones_like(truth)
+            if episode.events is None:
+                mask[:, 2] = False
+            frames.append(episode.observations[start:end+1]); actions.append(episode.actions_taken[start:end])
+            labels.append(truth); valid.append(mask); ids.append(episode.episode_id)
+            starts.append(start); clusters.append(cluster)
+    return {"frames": torch.stack(frames), "actions": torch.stack(actions),
+            "labels": torch.stack(labels), "valid": torch.stack(valid), "episode_ids": tuple(ids),
+            "starts": torch.tensor(starts), "clusters": torch.tensor(clusters),
+            "label_names": ("positive_reward", "negative_reward", "achievement_event", "termination")}

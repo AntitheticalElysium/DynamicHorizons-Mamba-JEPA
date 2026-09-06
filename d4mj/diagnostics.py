@@ -242,3 +242,75 @@ def cost(modules: dict[str, nn.Module], world: World, config: Config) -> dict[st
         "flops_per_step": float(flops),
         "backbone_passes_per_step": config.rungs + 1 if config.transition == "flow" else 1,
     }
+
+
+def binary_auc(scores: Tensor, truth: Tensor) -> float | None:
+    """Mann-Whitney AUC with average ranks for ties; absent classes are not .5."""
+    scores, truth = scores.detach().cpu().double(), truth.detach().cpu().bool()
+    if not bool(torch.isfinite(scores).all()):
+        raise ValueError("probe scores are nonfinite")
+    positive = int(truth.sum()); negative = len(truth)-positive
+    if not positive or not negative:
+        return None
+    order = scores.argsort(); sorted_scores = scores[order]
+    _, counts = torch.unique_consecutive(sorted_scores, return_counts=True)
+    end = counts.cumsum(0).double()
+    ranks = torch.repeat_interleave(end-(counts.double()-1)/2, counts)
+    return float((ranks[truth[order]].sum()-positive*(positive+1)/2)/(positive*negative))
+
+
+def paired_auc_interval(left, right, truth, valid, clusters, *, draws: int, seed: int):
+    """Macro-AUC difference, resampling whole paired episodes with fixed labels."""
+    def delta(indices):
+        values = []
+        for col in range(truth.shape[1]):
+            chosen = indices[valid[indices, col]]
+            a, b = binary_auc(left[chosen, col], truth[chosen, col]), binary_auc(right[chosen, col], truth[chosen, col])
+            if a is None or b is None:
+                return None
+            values.append(a-b)
+        return sum(values)/len(values) if values else None
+    groups = [torch.where(clusters == key)[0] for key in clusters.unique(sorted=True)]
+    point = delta(torch.arange(len(truth)))
+    samples = []
+    rng = torch.Generator().manual_seed(seed)
+    for _ in range(draws):
+        indices = torch.cat([groups[i] for i in torch.randint(len(groups), (len(groups),), generator=rng)])
+        value = delta(indices)
+        if value is not None:
+            samples.append(value)
+    bounds = None if len(samples) < .95*draws else torch.tensor(samples).quantile(torch.tensor([.025, .975])).tolist()
+    return {"difference": point, "interval": bounds, "valid_draws": len(samples), "draws": draws,
+            "unit": "episode", "status": "measured" if bounds is not None else "insufficient_coverage"}
+
+
+def fit_outcome_probe(train_x, train_y, train_valid, dev_x, settings, *, hidden: bool):
+    """Fixed TRAIN-only normalization and optimization, no DEV selection."""
+    from types import SimpleNamespace
+    from .train import optimizer, optimizer_step
+
+    device = train_x.device
+    mean, scale = train_x.mean(0), train_x.std(0, unbiased=False).clamp_min(1e-6)
+    train_x, dev_x = (train_x-mean)/scale, (dev_x-mean)/scale
+    width, outputs = train_x.shape[1], train_y.shape[1]
+    seed = settings.seed + (200 if hidden else 100)
+    devices = list(range(torch.cuda.device_count())) if device.type == "cuda" else []
+    with torch.random.fork_rng(devices=devices):
+        torch.manual_seed(seed)
+        model = (nn.Sequential(nn.Linear(width, settings.probe_hidden), nn.GELU(),
+                               nn.Linear(settings.probe_hidden, outputs)) if hidden else nn.Linear(width, outputs)).to(device)
+    config = SimpleNamespace(learning_rate=settings.probe_lr, weight_decay=settings.probe_decay)
+    opt = optimizer([model], config)
+    positive = (train_y*train_valid).sum(0)
+    negative = ((1-train_y)*train_valid).sum(0)
+    weight = negative/positive.clamp_min(1)
+    rng = torch.Generator(device=device).manual_seed(seed+1)
+    for _ in range(settings.probe_steps):
+        index = torch.randint(len(train_x), (settings.probe_batch,), generator=rng, device=device)
+        losses = nn.functional.binary_cross_entropy_with_logits(model(train_x[index]), train_y[index],
+                                                                 pos_weight=weight, reduction="none")
+        loss = (losses*train_valid[index]).sum()/train_valid[index].sum().clamp_min(1)
+        optimizer_step(opt, loss, model.parameters(), learning_rate=settings.probe_lr,
+                       grad_clip=1.0, strict=True)
+    with torch.no_grad():
+        return model.eval()(dev_x).cpu()

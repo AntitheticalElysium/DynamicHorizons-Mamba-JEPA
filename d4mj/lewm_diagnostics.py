@@ -300,3 +300,214 @@ def joint_checks(config: LeWMConfig, episodes, report: dict):
         Gate("joint_resource",lambda: resource_preflight(bundle,episodes),
              ("objective_source","recurrence","normalization")),
     )
+
+
+def covariance_summary(values):
+    """Finite empirical spectrum; report scale separately from effective rank."""
+    x = values.detach().cpu().double().reshape(-1, values.shape[-1])
+    if not bool(torch.isfinite(x).all()):
+        raise ComponentGateError("screen_finiteness", "nonfinite exported features")
+    centered = x-x.mean(0)
+    spectrum = torch.linalg.eigvalsh(centered.T@centered/max(1,len(x)-1)).clamp_min(0).flip(0)
+    total = spectrum.sum()
+    probability = spectrum/total.clamp_min(1e-30)
+    rank = torch.exp(-(probability*probability.clamp_min(1e-30).log()).sum()) if total > 0 else torch.tensor(0.)
+    return {"coordinate_variance": float(total/x.shape[-1]), "mean_norm": float(x.mean(0).norm()),
+            "effective_rank": float(rank), "eigenvalues": spectrum.tolist()}
+
+
+@torch.no_grad()
+def screen_features(bundle, windows, settings):
+    """Frozen exported/CLS features and teacher predictions on one fixed sample."""
+    bundle.eval()
+    before = tensor_state_digest(bundle.encoder.state_dict())
+    z_rows, cls_rows, prediction, marginal = [], [], [], []
+    actions = windows["actions"]
+    permuted = actions.roll(1, 0)
+    for start in range(0, len(actions), settings.encode_batch):
+        end = start+settings.encode_batch
+        frames = windows["frames"][start:end].to(bundle.device)
+        with torch.autocast(device_type=bundle.device.type, enabled=False):
+            z, cls = bundle.encoder.projected_and_cls(frames)
+            predicted = bundle.world.teacher(z, actions[start:end].to(bundle.device)).predicted
+            shuffled = bundle.world.teacher(z, permuted[start:end].to(bundle.device)).predicted
+        z_rows.append(z[:, :, 0].cpu()); cls_rows.append(cls.cpu())
+        prediction.append(predicted[:, :, 0].cpu()); marginal.append(shuffled[:, :, 0].cpu())
+    if tensor_state_digest(bundle.encoder.state_dict()) != before:
+        raise ComponentGateError("normalization", "screen changed encoder buffers")
+    z = torch.cat(z_rows)
+    return {"projected": z, "cls": torch.cat(cls_rows), "prediction": torch.cat(prediction),
+            "permuted_prediction": torch.cat(marginal), "persistence": z[:, :-1]}
+
+
+def screen_prediction_report(features, clusters, settings, *, variance):
+    target = features["projected"][:, 1:]
+    errors = {name: (features[name]-target).square().mean((1,2))
+              for name in ("prediction", "permuted_prediction", "persistence")}
+    def difference(other):
+        delta = errors["prediction"]-errors[other]
+        values = torch.stack([delta[clusters == k].mean() for k in clusters.unique(sorted=True)])
+        indices = torch.randint(len(values), (settings.bootstrap_draws, len(values)),
+                                generator=torch.Generator().manual_seed(settings.seed+300))
+        return {"difference": float(values.mean()),
+                "interval": values[indices].mean(1).quantile(torch.tensor([.025,.975])).tolist(), "unit": "episode"}
+    return {"normalized_prediction_mse": float(errors["prediction"].mean()/max(variance, settings.variance_floor)),
+            "mse": {name: float(value.mean()) for name,value in errors.items()},
+            "prediction_minus_persistence": difference("persistence"),
+            "prediction_minus_permuted_actions": difference("permuted_prediction"),
+            "scope": "logged-action association, not simulator action consequences"}, errors
+
+
+def screen_retention(train_features, dev_features, train_windows, dev_windows, settings, device, n_actions):
+    from .diagnostics import binary_auc, paired_auc_interval, fit_outcome_probe
+
+    truth = dev_windows["labels"].flatten(0,1)
+    valid = dev_windows["valid"].flatten(0,1)
+    fit_truth = train_windows["labels"].flatten(0,1)
+    fit_valid = train_windows["valid"].flatten(0,1)
+    coverage = []
+    for col, name in enumerate(train_windows["label_names"]):
+        counts = {}
+        for split, y, mask in (("train",fit_truth,fit_valid),("dev",truth,valid)):
+            counts[split] = {"positive": int((y[:,col]&mask[:,col]).sum()),
+                             "negative": int((~y[:,col]&mask[:,col]).sum())}
+        supported = all(v["positive"] >= settings.minimum_positive and v["negative"] >= settings.minimum_negative
+                        for v in counts.values())
+        coverage.append({"label": name, "counts": counts, "supported": supported})
+    selected = torch.tensor([row["supported"] for row in coverage])
+    clusters = dev_windows["clusters"].repeat_interleave(dev_windows["actions"].shape[1])
+    report = {"coverage": coverage, "probes": {}, "critical_semantic_retention": "not_evaluated",
+              "scope": "short-future archive proxies conditioned on outgoing action"}
+    outputs = {}
+    for hidden, family in ((False,"linear"),(True,"mlp")):
+        predictions = {}
+        for name in ("cls","projected"):
+            fit_x, dev_x = [torch.cat((features[name][:,:-1].flatten(0,1),
+                          torch.nn.functional.one_hot(windows["actions"].flatten(), n_actions).float()), -1).to(device)
+                          for features,windows in ((train_features,train_windows),(dev_features,dev_windows))]
+            predictions[name] = fit_outcome_probe(fit_x, fit_truth.float().to(device), fit_valid.float().to(device),
+                                                  dev_x, settings, hidden=hidden)
+        outputs[family] = predictions
+        if bool(selected.any()):
+            comparison = paired_auc_interval(predictions["projected"][:,selected], predictions["cls"][:,selected],
+                                             truth[:,selected], valid[:,selected], clusters,
+                                             draws=settings.bootstrap_draws, seed=settings.seed+400)
+        else:
+            comparison = {"status": "insufficient_coverage", "difference": None, "interval": None}
+        comparison["auc"] = {name: [binary_auc(scores[valid[:,i],i], truth[valid[:,i],i])
+                                    for i in range(truth.shape[1])] for name,scores in predictions.items()}
+        report["probes"][family] = comparison
+    report["projection_stop"] = all(row["interval"] is not None and row["interval"][1] < -settings.auc_margin
+                                     for row in report["probes"].values())
+    return report, {"scores": outputs, "truth": truth, "valid": valid, "clusters": clusters}
+
+
+def screen_joint_pair(runs, episodes, dataset_contract, settings, output):
+    """Paired G1 with checkpoint identity, mechanics and component-local stops."""
+    import json
+    from .config import config_from_dict, recipe_dict, recipe_digest
+    from .checkpoint import read_lewm_bundle
+    from .data import atomic_manifest, screen_windows, _sha256
+    from .gates import contract_digest
+    from .world_api import load_bundle
+
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    report_path = output / "screen.json"
+    if report_path.exists():
+        raise ValueError("screen_output: refusing to replace a sealed report")
+    report = {"schema": "d4mj_joint_screen_report_v1", "settings": recipe_dict(settings),
+              "settings_id": recipe_digest(settings), "dataset_id": contract_digest(dataset_contract),
+              "sources": lewm_source_manifest(), "arms": {}, "components": {}, "decision": "stop_component",
+              "architecture_verdict": "not_evaluated", "m4_authorized": False}
+    payloads = {}
+    try:
+        pair_path = Path(runs["raw"]).parent/"pair.json"
+        pair = json.loads(pair_path.read_text())
+        if pair["screen_settings_id"] != recipe_digest(settings) or pair["dataset_id"] != contract_digest(dataset_contract):
+            raise ComponentGateError("screen_settings", "screen differs from the pre-training seal")
+        report["pair_manifest"] = {"path":str(pair_path.resolve()),"sha256":_sha256(pair_path)}
+        for variant in ("raw", "tc"):
+            run = Path(runs[variant]); config = config_from_dict(json.loads((run/"resolved_recipe.json").read_text()))
+            checkpoint = run/"joint"/f"step-{config.joint.screen_step:06d}.pt"
+            payloads[variant] = p = read_lewm_bundle(checkpoint)
+            initial = read_lewm_bundle(run/"joint/step-000000.pt")
+            if (p["config"] != recipe_dict(config) or config.variant != variant or p["step"] != config.joint.screen_step
+                    or p["dataset"] != dataset_contract or initial["step"] != 0
+                    or initial["config"] != p["config"] or initial["dataset"] != dataset_contract
+                    or initial["initial_identity"] != p["initial_identity"]):
+                raise ComponentGateError("pair_identity", "wrong recipe, dataset, step or initial checkpoint")
+            for name in ("encoder", "world"):
+                if tensor_state_digest(initial["modules"][name]) != p["initial_identity"][name]:
+                    raise ComponentGateError("initial_identity", "saved initialization bytes do not match training")
+            report["arms"][variant] = {"checkpoint": str(checkpoint.resolve()), "checkpoint_sha256": _sha256(checkpoint),
+                                      "recipe_id": p["recipe_id"], "initial_identity": p["initial_identity"]}
+        raw, tc = payloads["raw"], payloads["tc"]
+        if ({k:v for k,v in raw["config"].items() if k != "variant"} !=
+                {k:v for k,v in tc["config"].items() if k != "variant"}
+                or raw["initial_identity"] != tc["initial_identity"]
+                or not torch.equal(raw["sampler"]["generator"],tc["sampler"]["generator"])
+                or not torch.equal(raw["projection_rng"],tc["projection_rng"])):
+            raise ComponentGateError("pair_identity", "raw/TC differ beyond the declared objective")
+        histories = [[json.loads(line) for line in (Path(runs[v])/"joint/metrics.jsonl").read_text().splitlines()]
+                     for v in ("raw","tc")]
+        length = raw["step"]
+        if any([row["update"] for row in h] != list(range(1,length+1)) for h in histories):
+            raise ComponentGateError("pair_history", "screen requires every update exactly once")
+        if any(a["windows"] != b["windows"] or a["learning_rate"] != b["learning_rate"]
+               for a,b in zip(*histories,strict=True)):
+            raise ComponentGateError("pair_history", "actual windows or schedules differ")
+        first_raw, first_tc = histories[0][0], histories[1][0]
+        if (abs(first_raw["prediction"]-first_tc["prediction"]) > 1e-6
+                or abs(first_raw["regularization"]-first_tc["regularization"]) <= 1e-6):
+            raise ComponentGateError("objective_contrast", "first paired update lacks the intended isolated treatment")
+        if not all(all(torch.isfinite(torch.tensor(float(value))) for key,value in row.items()
+                       if isinstance(value,(int,float))) for h in histories for row in h):
+            raise ComponentGateError("training_finiteness", "nonfinite training history")
+        report["components"]["pair_identity"] = {"status": "pass"}
+        config = config_from_dict(raw["config"])
+        windows = {split: screen_windows(episodes, config, settings, split) for split in ("train","dev")}
+        atomic_manifest(output/"windows.json", {split:{"episode_ids":w["episode_ids"],"starts":w["starts"].tolist()}
+                                                for split,w in windows.items()})
+        report["components"]["objective_contrast"] = {"status":"pass","detail":objective_audit(config)}
+        for variant in ("raw","tc"):
+            entry = report["arms"][variant]
+            bundle, _ = load_bundle(entry["checkpoint"])
+            bundle.world.requires_grad_(True)
+            for name, check in (("normalization",normalization_audit),("recurrence",recurrence_audit)):
+                try:
+                    report["components"][f"{variant}_{name}"] = {"status":"pass","detail":check(bundle)}
+                except Exception as error:
+                    raise ComponentGateError(f"{variant}_{name}",str(error)) from error
+            bundle.world.requires_grad_(False)
+            features = {split: screen_features(bundle,w,settings) for split,w in windows.items()}
+            z = features["dev"]["projected"]
+            entry["spectra"] = {"raw":covariance_summary(z), "residual":covariance_summary(z-z.mean(1,keepdim=True)),
+                                "persistent":covariance_summary(z.mean(1))}
+            entry["temporal_power"] = torch.fft.rfft(z.double(),dim=1).abs().square().mean((0,2)).tolist()
+            variance = covariance_summary(features["train"]["projected"])["coordinate_variance"]
+            if variance < settings.variance_floor:
+                raise ComponentGateError(f"{variant}_latent_variance", "numerical export collapse")
+            entry["prediction"], errors = screen_prediction_report(features["dev"],windows["dev"]["clusters"],settings,variance=variance)
+            entry["retention"], probe_rows = screen_retention(features["train"],features["dev"],windows["train"],windows["dev"],
+                                                            settings,bundle.device,bundle.n_actions)
+            torch.save({"features":features,"errors":errors,"probes":probe_rows},output/f"{variant}_rows.pt")
+            del bundle
+            initial_bundle, _ = load_bundle(Path(runs[variant])/"joint/step-000000.pt")
+            initial_features = {split:screen_features(initial_bundle,w,settings) for split,w in windows.items()}
+            initial_variance = covariance_summary(initial_features["train"]["projected"])["coordinate_variance"]
+            entry["initial_prediction"], _ = screen_prediction_report(initial_features["dev"],windows["dev"]["clusters"],settings,variance=initial_variance)
+            del initial_bundle, initial_features, features
+            if entry["retention"]["projection_stop"]:
+                raise ComponentGateError(f"{variant}_projection_retention", "both fixed probes exceed the loss margin with paired support")
+            entry["learning_progress"] = entry["prediction"]["normalized_prediction_mse"] < entry["initial_prediction"]["normalized_prediction_mse"]
+        report["decision"] = "continue_joint_budget" if all(a["learning_progress"] for a in report["arms"].values()) else "review_required"
+    except Exception as error:
+        component = getattr(error,"component","joint_screen_execution")
+        report["components"][component] = {"status":"fail","reason":str(error)}
+        report["blocked_component"] = component
+    report["artifacts"] = {p.name:_sha256(p) for p in output.iterdir() if p.is_file() and p != report_path}
+    report["artifact_root"] = str(output.resolve())
+    report["report_id"] = contract_digest(report)
+    atomic_manifest(report_path,report)
+    return report
