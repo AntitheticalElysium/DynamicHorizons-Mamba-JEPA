@@ -2,6 +2,8 @@
 
 Implemented in the working tree against `162efd1` on `craftax-clean-baseline`, 2026-09-05; integrated into shared infrastructure on 2026-09-06. See the [integration record](INTEGRATION_REFACTOR.md). This is the actual TC-LeWM–Mamba architecture and persistent state API. Small test fixtures instantiate these same classes with reduced dimensions; there is no disposable alternate world model.
 
+The first research pair subsequently passed G1 and completed 10,000 joint updates per arm. See the [paired research record](TC_LEWM_PAIRED_RESULTS.md) for final checkpoint audits and the remaining M4 boundary. These results are separate from the technical fixtures described below.
+
 ## Active architecture
 
 Native uint8 `63×63` RGB → source ImageNet preprocessing → HF ViT-Tiny (patch7, width192, depth12, heads3, CLS) → retained `192→2048→192` BN/GELU projector → unbounded `[B,T,1,192]` latent. Each completed `(z_t,a_t)` pair concatenates a learned 64-D action embedding and projects to width256. Six pre-RMS residual Mamba-2 blocks (`expand=1, state=64, head=64, conv=4`) and final RMSNorm feed the predictor's `256→2048→192` BN/GELU projector. Encoder plus world contain 6,175,872 + 2,503,496 parameters, including the untrained policy readout.
@@ -29,7 +31,7 @@ Joint training uses actual B128, four frames/three outgoing actions, both-sided 
 | [execution.py](../execution.py), [imagination.py](../imagination.py), [diagnostics.py](../diagnostics.py) | Existing execution and imagination use the adapters. Both reject LeWM control before touching the environment or policy. Shared `rollout_predictions` drives legacy multistep diagnostics and supports LeWM mechanical rollouts. Other legacy diagnostics and training targets retain their explicit family scope. |
 | [__main__.py](../__main__.py), [experiments.py](../experiments.py) | Unified `python -m d4mj` CLI. No arguments or `gates` retains the four-arm lattice; recipe preflight dispatches by family; joint/resume/export uses shared modules. Later LeWM stages remain blocked. |
 
-The original M0–M8 map included future adapters and methods. `LegacyWorldAdapter`, shared actor/execution callers, bridge/heads/actor/renderer settings, semantic screening and control aggregation remain M4+ work. Legacy callers keep their existing interfaces; the new family never masquerades as a legacy `WorldState` or v1 checkpoint.
+The original M0–M8 map included future adapters and methods. The adapters and existing execution/imagination callers are now integrated. The new family's bridge/heads/actor/renderer settings, critical semantic screening and control aggregation remain M4+ work. Legacy callers keep their existing interfaces; the new family never masquerades as a legacy `WorldState` or v1 checkpoint.
 
 ## Audit findings and resolutions
 
@@ -58,18 +60,20 @@ The pre-integration CPU regression suite reported **187 passed, 5 skipped**. Bot
 
 ## Commands and hard stops
 
-From the repository root, using the measured environment in [requirements-lewm-rtx3060.lock.txt](../../requirements-lewm-rtx3060.lock.txt):
+For a **new** run, from the repository root, use the measured environment in [requirements-lewm-rtx3060.lock.txt](../../requirements-lewm-rtx3060.lock.txt) with explicit IEEE precision (TC-35):
 
 ```bash
-.venv/bin/python -m d4mj preflight \
+TRITON_F32_DEFAULT=ieee .venv/bin/python -m d4mj preflight \
   --recipe d4mj/recipes/lewm_mamba_tc.json \
   --dataset <verified-raw-store-directory-or-manifest.json> --out <fresh-run-directory>
-.venv/bin/python -m d4mj joint --run <run-directory> --stop-at 2000
-.venv/bin/python -m d4mj export --run <run-directory> \
+TRITON_F32_DEFAULT=ieee .venv/bin/python -m d4mj joint --run <run-directory> --stop-at 2000
+TRITON_F32_DEFAULT=ieee .venv/bin/python -m d4mj export --run <run-directory> \
   --checkpoint <run-directory>/joint/step-002000.pt --out <fresh-cache-directory> --diagnostic
 ```
 
 Create a separate raw run with the raw recipe and the same data/seed. Source or backend-setting edits invalidate preflight; data changes invalidate the dataset identity. Ordinary joint research calls default to the screen checkpoint. The implemented G1 evaluator must pass before continuation beyond it. `paired-run` performs that sequence; manual continuation takes `--screen-report <G1/screen.json>`. `--verification` labels technical tests and cannot be reported as a research result. Partial exports require `--diagnostic` and remain explicitly incomplete.
+
+The completed first pair used `TRITON_F32_DEFAULT` unset. Its checkpoints retain that execution identity and must not be silently resumed under the new one. Its [separate IEEE diagnostic](TC_LEWM_PAIRED_RESULTS.md) validates inference precision without changing the original checkpoints or granting another training budget.
 
 M4/H16/actor/renderer remain blocked. Checkpoint capabilities record `trained_recursive_depth=0`, `validated_recursive_depth=0`, `readout_trained=false` and `m4_authorized=false`. Persistent software recurrence and a passed numerical gate do not confer a learned recursive horizon.
 

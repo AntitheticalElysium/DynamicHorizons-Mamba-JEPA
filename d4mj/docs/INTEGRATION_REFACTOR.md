@@ -25,7 +25,7 @@ Implemented 2026-09-06 against `162efd1`. The initial implementation created too
 - Legacy `advance` retains S55's detached incoming memory. LeWM retains differentiable conv/SSM carry and accepted latents. Fork/detach/repeat preserve storage ownership; legacy repeats unflatten batch and spatial slots before branching.
 - MAE cache identity, bounded temporal encoding and cache schema are preserved. LeWM cache identity still includes projector parameters, BN buffers, preprocessing and imported ViT implementation; it stores unbounded float32 `[T,1,192]` latents. The shared writer validates registered shard bytes before resuming and refuses to overwrite orphan shards.
 - Both optimizers honor Mamba's `_no_weight_decay`. Legacy phases continue to decay ordinary vectors/biases; joint training explicitly excludes them. Joint warmup/cosine and legacy warmup schedules remain different. No research hyperparameter, source tolerance, statistical batch or adaptation group changed in this refactor (TC-33).
-- Shared execution does not enable LeWM control: its adapter rejects execution/imagination before touching the environment or heads. G1 screening, M4, H16, actor and renderer gates remain closed. Mechanical rollout support is not evidence of a learned horizon.
+- Shared execution does not enable LeWM control: its adapter rejects execution/imagination before touching the environment or heads. G1 was closed at the integration snapshot; it was subsequently implemented and passed by the [first research pair](TC_LEWM_PAIRED_RESULTS.md). M4, H16, actor and renderer gates remain closed. Mechanical rollout support is not evidence of a learned horizon.
 
 ## Verification
 

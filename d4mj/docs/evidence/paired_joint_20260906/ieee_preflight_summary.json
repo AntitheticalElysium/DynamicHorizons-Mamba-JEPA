@@ -1,0 +1,26 @@
+{
+  "scope": "fresh full-architecture G0 with explicit IEEE FP32; no continuation or new research training",
+  "m4_authorized": false,
+  "arms": {
+    "raw": {
+      "source_identity": "pass",
+      "dataset": "pass",
+      "device": "pass",
+      "objective_source": "pass",
+      "model_construction": "pass",
+      "recurrence": "pass",
+      "normalization": "pass",
+      "joint_resource": "pass"
+    },
+    "tc": {
+      "source_identity": "pass",
+      "dataset": "pass",
+      "device": "pass",
+      "objective_source": "pass",
+      "model_construction": "pass",
+      "recurrence": "pass",
+      "normalization": "pass",
+      "joint_resource": "pass"
+    }
+  }
+}

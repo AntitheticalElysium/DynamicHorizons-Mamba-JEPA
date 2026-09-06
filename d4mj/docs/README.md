@@ -1,6 +1,6 @@
 # TC-LeWM–Mamba: architecture, implementation and gates
 
-Status: **M0–M3 implemented in the working tree; validation and scope are recorded in [M0–M3 status](TC_LEWM_M0_M3_STATUS.md). M4–M8 remain proposed and blocked.** Design and history reviewed through `162efd1` on `craftax-clean-baseline`, 2026-09-05. No learned-control or architecture-success result is claimed.
+Status: **M0–M3 are committed and integrated into shared infrastructure. The first raw/TC pair passed G1 and completed10,000 joint updates per arm; see the [research results and component stops](TC_LEWM_PAIRED_RESULTS.md). M4–M8 remain proposed and blocked.** Implementation contracts are recorded in [M0–M3 status](TC_LEWM_M0_M3_STATUS.md). The initial design/history review covered `162efd1` on `craftax-clean-baseline`, 2026-09-05. No learned-control or architecture-success result is claimed.
 
 ## Recommendation and project goal
 
