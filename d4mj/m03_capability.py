@@ -332,7 +332,7 @@ def _candidate_rows(replay, split: str, count: int, settings: M03Settings) -> li
     """Select distinct episodes with a declared terminal-tail/broad mixture."""
 
     manifest = replay.manifest()
-    terminal, ordinary = [], []
+    terminal, eligible = [], []
     for shard_index, record in enumerate(manifest["shards"]):
         payload = torch.load(replay.STORE / record["file"], weights_only=False, mmap=True)
         for slot, fields in enumerate(payload["episodes"]):
@@ -342,23 +342,35 @@ def _candidate_rows(replay, split: str, count: int, settings: M03Settings) -> li
             if steps <= settings.legacy_context:
                 continue
             row = {"shard": shard_index, "slot": slot, "steps": steps, "episode_id": fields["episode_id"]}
+            eligible.append(row)
             if bool(fields["terminated"][-1]):
                 terminal.append(row)
-            else:
-                ordinary.append(row)
         del payload
     wanted_terminal = round(count * settings.terminal_tail_fraction)
-    if len(terminal) < wanted_terminal or len(ordinary) < count - wanted_terminal:
-        raise RuntimeError(f"m03_coverage: {split} lacks required terminal/broad episode roots")
+    if len(terminal) < wanted_terminal:
+        raise RuntimeError(f"m03_coverage: {split} lacks required terminal-tail episode roots")
     rng = np.random.default_rng(settings.seed + (1 if split == "train" else 2))
     selected = []
-    for kind, pool, take in (("terminal_tail", terminal, wanted_terminal), ("ordinary", ordinary, count-wanted_terminal)):
-        choices = rng.choice(len(pool), size=take, replace=False)
-        for pick in choices.tolist():
-            row = dict(pool[pick])
-            row["stratum"] = kind
-            row["t"] = row["steps"] - 1 if kind == "terminal_tail" else int(rng.integers(settings.legacy_context - 1, row["steps"] - 1))
-            selected.append(row)
+    choices = rng.choice(len(terminal), size=wanted_terminal, replace=False)
+    selected_keys = set()
+    for pick in choices.tolist():
+        row = dict(terminal[pick])
+        row["stratum"], row["t"] = "terminal_tail", row["steps"] - 1
+        selected.append(row)
+        selected_keys.add((row["shard"], row["slot"]))
+    # "Broad" means a non-terminal *time*, not a timeout-only episode.  It may
+    # come from a terminal trajectory as long as that episode did not supply a
+    # terminal-tail root; this maintains distinct bootstrap units.
+    broad = [row for row in eligible if (row["shard"], row["slot"]) not in selected_keys]
+    wanted_broad = count - wanted_terminal
+    if len(broad) < wanted_broad:
+        raise RuntimeError(f"m03_coverage: {split} lacks required distinct broad episode roots")
+    choices = rng.choice(len(broad), size=wanted_broad, replace=False)
+    for pick in choices.tolist():
+        row = dict(broad[pick])
+        row["stratum"] = "broad"
+        row["t"] = int(rng.integers(settings.legacy_context - 1, row["steps"] - 1))
+        selected.append(row)
     rng.shuffle(selected)
     return selected
 
