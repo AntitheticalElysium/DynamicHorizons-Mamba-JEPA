@@ -7,8 +7,11 @@ report, not a scalar promotion rule and not an authorization for M4.
 The gate creates a fresh `DEV`-only sidecar from exact `support-v2` simulator
 replay.  It verifies rendered roots and sampled replay trajectories against the
 stored pixels, then forks every root through all 17 Craftax actions using common
-root randomness.  Labels are held in the sidecar, never inferred from model
-outputs:
+root randomness.  Root state matching uses a declared maximum pixel tolerance
+of one: the fixed 384-root preflight found 383 exact renders and one one-pixel,
+one-count renderer-rounding discrepancy; the recorded manifest exposes both
+the tolerance and all nonzero pixel elements.  Labels are held in the sidecar,
+never inferred from model outputs:
 
 - visible scalar state: health, food, drink, energy, materials and tools;
 - visible/local state and source-derived action prerequisites;

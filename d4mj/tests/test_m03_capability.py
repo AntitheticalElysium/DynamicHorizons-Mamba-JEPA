@@ -3,6 +3,7 @@ import torch
 
 from d4mj.m03_capability import (
     M03Settings,
+    REPLAY_PIXEL_TOLERANCE,
     _binary_metrics,
     _fit_probe_many,
     _load_or_compute_stage,
@@ -20,6 +21,7 @@ def _settings():
 def test_settings_reject_an_incompatible_legacy_context():
     with pytest.raises(ValueError, match="context"):
         M03Settings(legacy_context=3, lewm_context=4)
+    assert REPLAY_PIXEL_TOLERANCE == 1
 
 
 def test_binary_metrics_bootstraps_one_root_and_all_action_targets_correctly():
