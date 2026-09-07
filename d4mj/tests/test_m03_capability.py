@@ -5,7 +5,9 @@ from d4mj.m03_capability import (
     M03Settings,
     _binary_metrics,
     _fit_probe_many,
+    _load_or_compute_stage,
     _mode_summary,
+    _paired_binary_difference,
 )
 
 
@@ -53,4 +55,29 @@ def test_mode_summary_is_explicitly_advisory_for_deterministic_predictions():
     modes = torch.zeros(2, 17, 2, 6, dtype=torch.bool)
     report = _mode_summary(logits, truth, modes, torch.tensor([0, 1]), settings)
     assert report["status"] == "advisory_only_deterministic_model"
-    assert report["nearest_sampled_mode_brier"] == 0.25
+    assert report["nearest_sampled_mode_mean_squared_score_distance"] == 0.25
+    assert "brier" not in str(report).lower()
+
+
+def test_paired_binary_difference_resamples_roots_not_individual_forks():
+    settings = _settings()
+    truth = torch.tensor([[[True]] * 17, [[False]] * 17])
+    left = torch.tensor([[[3.0]] * 17, [[-3.0]] * 17])
+    right = -left
+    report = _paired_binary_difference(left, right, truth, torch.tensor([0, 1]), ("death",), settings)
+    target = report["targets"]["death"]
+    assert target["auc_difference"] == 1.0
+    assert report["direction"] == "left_minus_right"
+
+
+def test_stage_cache_reuses_the_same_verified_stage(tmp_path):
+    calls = []
+
+    def compute():
+        calls.append(True)
+        return {"answer": 7}
+
+    metadata = {"feature_manifest": "sealed"}
+    assert _load_or_compute_stage(tmp_path, "outcomes", metadata, compute) == {"answer": 7}
+    assert _load_or_compute_stage(tmp_path, "outcomes", metadata, compute) == {"answer": 7}
+    assert len(calls) == 1

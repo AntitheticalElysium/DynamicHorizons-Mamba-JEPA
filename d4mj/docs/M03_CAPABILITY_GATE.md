@@ -19,10 +19,18 @@ outputs:
 All linear and fixed-MLP decoders are fitted on the sidecar's `TRAIN` split.
 The same observed-successor decoder (including its train-derived
 standardization) is then applied to observed, generated, and prefix-reset
-successor states.  The report includes action-only, shuffled-action,
-root-plus-action, timestep, and raw-pixel controls.  Confidence intervals
-bootstrap replay roots/episodes; the 17 sibling action forks are never treated
-as independent examples.
+successor states for both the six coarse consequences and the full successor
+state: vitals, materials/tools, local tile state, and action prerequisites.
+The report includes action-only, shuffled-action, root-plus-action, timestep,
+and raw-pixel controls.  Confidence intervals bootstrap replay roots/episodes;
+the 17 sibling action forks are never treated as independent examples.
+
+The report also gives predeclared paired root-bootstrap differences for
+generated versus observed states within Raw and TC; Raw/TC generated states
+versus Direct-A and Direct-M; and TC generated versus Raw generated.  It does
+not report Brier scores: class-weighted BCE is a discrimination/ranking probe,
+not a calibrated probability model.  Mode diagnostics are explicitly labelled
+as squared score distances only.
 
 For each Raw, TC, Direct-A, and Direct-M anchor, the report records static
 retention and one-step all-action semantic transfer, fatal/safe and reward
@@ -37,6 +45,13 @@ environment drift aborts loading.  CPU `--smoke --skip-direct` is only an
 end-to-end structural test and writes `structural_smoke_not_a_result`; it is
 not a scientific comparison.  Direct-M's archived Triton implementation also
 requires CUDA.
+
+Runs are automatically resumable with the same `--out` directory.  A sealed
+`run.json` hashes settings, checkpoints, dataset, evaluator, replay source, and
+anchors.  The sidecar publishes atomically; each arm/split feature cache and
+each expensive probe stage is independently content-checked.  A changed input
+or partially published cache fails closed rather than being mixed into a new
+result.
 
 Example full invocation on the recorded environment:
 
