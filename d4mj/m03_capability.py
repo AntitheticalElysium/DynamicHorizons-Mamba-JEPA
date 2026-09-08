@@ -10,6 +10,11 @@ answers only questions the completed joint bundles can answer:
 * is a deterministic successor compatible with one of the simulator's sampled
   modes, and does a valid four-frame prefix matter?
 
+Direct is evaluated under its native 64-frame production prefix; LeWM receives
+the final four frames from that same physical prefix.  The primary all-action
+fork uses the stored episode step key and verifies that its logged action
+reproduces the stored successor before any model is encoded.
+
 It does *not* train heads, a bridge, a policy, an actor, or a longer recursive
 world.  ``m4_authorized`` is therefore always false in its output.
 
@@ -45,16 +50,29 @@ from .world_api import ModelBundle
 
 
 ROOT = Path(__file__).resolve().parent.parent
-SCHEMA = "d4mj_m03_capability_gate_v1"
-SIDECAR_SCHEMA = "d4mj_m03_probe_sidecar_v1"
-RUN_SCHEMA = "d4mj_m03_run_v1"
-FEATURE_SCHEMA = "d4mj_m03_feature_cache_v1"
-STAGE_SCHEMA = "d4mj_m03_stage_cache_v1"
+SCHEMA = "d4mj_m03_capability_gate_v2"
+SIDECAR_SCHEMA = "d4mj_m03_probe_sidecar_v2"
+RUN_SCHEMA = "d4mj_m03_run_v2"
+FEATURE_SCHEMA = "d4mj_m03_feature_cache_v2"
+STAGE_SCHEMA = "d4mj_m03_stage_cache_v2"
+DIRECT_INPUT_PROTOCOL = "native_prefix64_with_first_incoming_action_v1"
+# The primary fork is the exact key that produced the recorded next observation.
+# It makes the logged action an executable factual-replay assertion while still
+# giving all 17 counterfactual actions the same environmental randomness.
+PRIMARY_FORK_PROTOCOL = "recorded_step_key_v1"
+# Additional stochastic samples are deliberately separate from the factual fork.
+# They answer only the advisory mode question and can never be mistaken for the
+# stored trajectory successor.
+MODE_FORK_PROTOCOL = "derived_common_rng_v1"
 # The fixed 384-root preflight observed 383 exact renders and one single-pixel,
 # one-count renderer quantization difference.  State replay remains exact; this
 # bounded image tolerance makes that renderer round-off visible rather than
 # silently pretending it is zero.
 REPLAY_PIXEL_TOLERANCE = 1
+# This compares M03's adapter route with the independently preserved Direct
+# production-evaluator route.  It is a floating-point comparison rather than
+# simulator replay, hence a numerical (not pixel) tolerance.
+DIRECT_NATIVE_PARITY_TOLERANCE = 1e-6
 
 
 @dataclass(frozen=True)
@@ -66,11 +84,19 @@ class M03Settings:
     train_roots: int = 256
     dev_roots: int = 128
     terminal_tail_fraction: float = 0.5
-    legacy_context: int = 16
+    # Direct's MAE encoder reaches 31 frames and its V2 dynamics cache reaches
+    # 48.  The archived production evaluator uses 64-frame prefixes, so M03
+    # retains 64 and routes only the final four to LeWM.
+    direct_context: int = 64
     lewm_context: int = 4
     replay_checks: int = 4
     mode_samples: int = 4
     encode_batch: int = 16
+    # Direct's native 64-frame successor encoding is materially larger than a
+    # four-frame LeWM pass.  These are memory-only execution choices, sealed in
+    # the contract; they do not alter either model's inputs or outputs.
+    direct_encode_batch: int = 1
+    direct_successor_batch: int = 4
     probe_hidden: int = 128
     probe_steps: int = 200
     probe_batch: int = 256
@@ -86,12 +112,13 @@ class M03Settings:
             raise ValueError("m03_settings: unsupported schema")
         if self.train_roots < 2 or self.dev_roots < 2:
             raise ValueError("m03_settings: both splits need at least two roots")
-        if (self.legacy_context, self.lewm_context) != (16, 4):
+        if (self.direct_context, self.lewm_context) != (64, 4):
             raise ValueError("m03_settings: invalid context lengths")
         if not 0.0 <= self.terminal_tail_fraction <= 1.0:
             raise ValueError("m03_settings: tail fraction must lie in [0, 1]")
-        for name in ("replay_checks", "mode_samples", "encode_batch", "probe_hidden", "probe_steps",
-                     "probe_batch", "bootstrap_draws", "minimum_positive", "minimum_negative"):
+        for name in ("replay_checks", "mode_samples", "encode_batch", "direct_encode_batch",
+                     "direct_successor_batch", "probe_hidden", "probe_steps", "probe_batch",
+                     "bootstrap_draws", "minimum_positive", "minimum_negative"):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise ValueError(f"m03_settings: {name} must be a positive integer")
         for name in ("probe_learning_rate", "probe_weight_decay", "ridge"):
@@ -344,7 +371,7 @@ def _candidate_rows(replay, split: str, count: int, settings: M03Settings) -> li
             if fields["split"] != split:
                 continue
             steps = len(fields["actions_taken"])
-            if steps <= settings.legacy_context:
+            if steps < settings.direct_context:
                 continue
             row = {"shard": shard_index, "slot": slot, "steps": steps, "episode_id": fields["episode_id"]}
             eligible.append(row)
@@ -374,7 +401,7 @@ def _candidate_rows(replay, split: str, count: int, settings: M03Settings) -> li
     for pick in choices.tolist():
         row = dict(broad[pick])
         row["stratum"] = "broad"
-        row["t"] = int(rng.integers(settings.legacy_context - 1, row["steps"] - 1))
+        row["t"] = int(rng.integers(settings.direct_context - 1, row["steps"] - 1))
         selected.append(row)
     rng.shuffle(selected)
     return selected
@@ -389,12 +416,45 @@ def _stack_rows(rows: list[dict[str, Any]], names: tuple[str, ...]) -> dict[str,
         "root_continuous": tensor("root_continuous").float(), "root_binary": tensor("root_binary").bool(),
         "next_continuous": tensor("next_continuous").float(), "next_binary": tensor("next_binary").bool(),
         "outcomes": tensor("outcomes").bool(), "modes": tensor("modes").bool(),
+        "factual_action": torch.tensor([row["factual_action"] for row in rows], dtype=torch.long),
+        "factual_max_abs": torch.tensor([row["factual_max_abs"] for row in rows], dtype=torch.long),
+        "direct_first_action": torch.tensor([row["direct_first_action"] for row in rows], dtype=torch.long),
         "episode": torch.tensor([row["episode"] for row in rows], dtype=torch.long),
         "time": torch.tensor([row["time"] for row in rows], dtype=torch.long),
         "stratum": [row["stratum"] for row in rows], "episode_id": [row["episode_id"] for row in rows],
-        "rows": [{key: row[key] for key in ("shard", "slot", "time", "episode_id", "stratum")} for row in rows],
+        "rows": [{key: row[key] for key in ("shard", "slot", "time", "episode_id", "stratum")}
+                 | {"factual_action": row["factual_action"], "factual_max_abs": row["factual_max_abs"],
+                    "direct_first_action": row["direct_first_action"]}
+                 for row in rows],
         "names": names,
     }
+
+
+def _recorded_step_key(replay, row: dict[str, Any]):
+    """The exact environment key for the logged outgoing action at a root."""
+
+    _, step_keys = replay._slot_keys(int(row["shard"]), int(row["slot"]))
+    return step_keys[int(row["t"])]
+
+
+def _derived_mode_key(jax, row: dict[str, Any], mode: int, settings: M03Settings):
+    """A deterministic fresh key for advisory stochastic-mode samples only."""
+
+    key = jax.random.PRNGKey(settings.seed)
+    for field in (row["shard"], row["slot"], row["t"], mode):
+        key = jax.random.fold_in(key, int(field))
+    return key
+
+
+def _direct_first_incoming_action(actions: np.ndarray, context_start: int) -> int:
+    """Incoming action for the first frame of a cropped Direct prefix.
+
+    ``past_actions`` carries the 63 outgoing actions between 64 retained frames.
+    Direct also consumes the action that produced the first retained frame; it is
+    BOS only when that frame is the true episode start.
+    """
+
+    return 17 if context_start == 0 else int(actions[context_start - 1])
 
 
 def build_sidecar(dataset: Path, output: Path, settings: M03Settings) -> dict[str, Any]:
@@ -420,14 +480,18 @@ def build_sidecar(dataset: Path, output: Path, settings: M03Settings) -> dict[st
                 "dev": _candidate_rows(replay, "dev", settings.dev_roots, settings)}
     rows_by_split: dict[str, list[dict[str, Any]]] = {"train": [], "dev": []}
     pixel_error, pixel_nonzero = 0, 0
+    factual_error, factual_nonzero = 0, 0
     started = time.time()
     for split, selections in selected.items():
         for number, selected_row in enumerate(selections):
             state = replay.advance_to(selected_row["shard"], selected_row["slot"], selected_row["t"])
             fields = replay.episode_fields(selected_row["shard"], selected_row["slot"])
             frames = _array(fields["observations"])
-            context = frames[selected_row["t"] - settings.legacy_context + 1:selected_row["t"] + 1]
-            actions = _array(fields["actions_taken"])[selected_row["t"] - settings.legacy_context + 1:selected_row["t"]]
+            all_actions = _array(fields["actions_taken"])
+            context_start = selected_row["t"] - settings.direct_context + 1
+            context = frames[context_start:selected_row["t"] + 1]
+            actions = all_actions[context_start:selected_row["t"]]
+            direct_first_action = _direct_first_incoming_action(all_actions, context_start)
             rendered = _array(frame_fn(state))
             delta = np.abs(rendered.astype(np.int16) - context[-1].astype(np.int16))
             error = int(delta.max())
@@ -436,11 +500,20 @@ def build_sidecar(dataset: Path, output: Path, settings: M03Settings) -> dict[st
             if error > REPLAY_PIXEL_TOLERANCE:
                 raise RuntimeError(f"m03_replay: root pixel mismatch at {selected_row['episode_id']}:{selected_row['t']}: {error}")
             root_continuous, root_binary = _state_scalars(state), _state_binary_labels(state)
-            primary_key = jax.random.PRNGKey(settings.seed)
-            # Stable, replay-address-derived common randomness.  It is deliberately
-            # independent of the loop order and shared by every one of the 17 forks.
-            for field in (selected_row["shard"], selected_row["slot"], selected_row["t"]):
-                primary_key = jax.random.fold_in(primary_key, int(field))
+            primary_key = _recorded_step_key(replay, selected_row)
+            factual_action = int(all_actions[selected_row["t"]])
+            _, factual_next, _, _, _ = step_fn(primary_key, state, factual_action)
+            factual_frame = _array(frame_fn(factual_next), dtype=np.uint8)
+            expected_frame = frames[selected_row["t"] + 1]
+            factual_delta = np.abs(factual_frame.astype(np.int16) - expected_frame.astype(np.int16))
+            factual_max_abs = int(factual_delta.max())
+            factual_error = max(factual_error, factual_max_abs)
+            factual_nonzero += int((factual_delta > 0).sum())
+            if factual_max_abs > REPLAY_PIXEL_TOLERANCE:
+                raise RuntimeError(
+                    "m03_factual_replay: logged action did not reproduce its stored successor at "
+                    f"{selected_row['episode_id']}:{selected_row['t']}: {factual_max_abs}"
+                )
             successors, next_continuous, next_binary, outcomes, modes = [], [], [], [], []
             for action in range(17):
                 _, nxt, reward, _, _ = step_fn(primary_key, state, action)
@@ -452,7 +525,7 @@ def build_sidecar(dataset: Path, output: Path, settings: M03Settings) -> dict[st
                                                 successor_binary=successor_binary, replay=replay))
                 sampled = []
                 for mode in range(settings.mode_samples):
-                    key = jax.random.fold_in(primary_key, 1 + mode)
+                    key = _derived_mode_key(jax, selected_row, mode, settings)
                     _, stochastic_next, stochastic_reward, _, _ = step_fn(key, state, action)
                     sampled.append(_action_outcomes(state, stochastic_next, float(stochastic_reward),
                                                     root_binary=root_binary,
@@ -463,6 +536,8 @@ def build_sidecar(dataset: Path, output: Path, settings: M03Settings) -> dict[st
                 "root_continuous": root_continuous, "root_binary": root_binary,
                 "next_continuous": np.stack(next_continuous), "next_binary": np.stack(next_binary),
                 "outcomes": np.stack(outcomes), "modes": np.stack(modes),
+                "factual_action": factual_action, "factual_max_abs": factual_max_abs,
+                "direct_first_action": direct_first_action,
                 "episode": number, "time": selected_row["t"], "episode_id": selected_row["episode_id"],
                 "shard": selected_row["shard"], "slot": selected_row["slot"], "stratum": selected_row["stratum"],
             })
@@ -473,6 +548,8 @@ def build_sidecar(dataset: Path, output: Path, settings: M03Settings) -> dict[st
     payload = {
         "schema": SIDECAR_SCHEMA, "probe_only": True, "dataset": str(Path(dataset).resolve()),
         "dataset_sha256": _sha256(Path(dataset)), "settings": asdict(settings),
+        "direct_input_protocol": DIRECT_INPUT_PROTOCOL,
+        "primary_fork_protocol": PRIMARY_FORK_PROTOCOL, "mode_fork_protocol": MODE_FORK_PROTOCOL,
         "continuous_names": STATIC_CONTINUOUS, "binary_names": STATIC_BINARY, "outcome_names": OUTCOME_BINARY,
         "splits": {split: _stack_rows(rows, STATIC_BINARY) for split, rows in rows_by_split.items()},
     }
@@ -487,12 +564,18 @@ def build_sidecar(dataset: Path, output: Path, settings: M03Settings) -> dict[st
     manifest = {
         "schema": SIDECAR_SCHEMA, "probe_only": True, "sidecar": {"path": str(sidecar.resolve()), "sha256": _sha256(sidecar)},
         "dataset": payload["dataset"], "dataset_sha256": payload["dataset_sha256"], "settings": asdict(settings),
+        "direct_input_protocol": DIRECT_INPUT_PROTOCOL,
         "replay": {"root_pixel_max_abs": pixel_error, "root_pixel_nonzero_elements": pixel_nonzero,
                    "root_pixel_tolerance": REPLAY_PIXEL_TOLERANCE,
                    "status": "pass" if pixel_error <= REPLAY_PIXEL_TOLERANCE else "fail",
                    "checked_roots": settings.train_roots + settings.dev_roots,
                    "trajectory_check_max_abs": max(replay_checks, default=0),
                    "trajectory_checked_episodes": len(replay_checks)},
+        "fork": {"primary_protocol": PRIMARY_FORK_PROTOCOL, "mode_protocol": MODE_FORK_PROTOCOL,
+                 "factual_pixel_max_abs": factual_error, "factual_pixel_nonzero_elements": factual_nonzero,
+                 "factual_pixel_tolerance": REPLAY_PIXEL_TOLERANCE,
+                 "factual_roots_checked": settings.train_roots + settings.dev_roots,
+                 "status": "pass" if factual_error <= REPLAY_PIXEL_TOLERANCE else "fail"},
         "coverage": coverage, "seconds": time.time() - started,
     }
     atomic_manifest(output / "manifest.json", manifest)
@@ -514,6 +597,7 @@ def _load_or_build_sidecar(dataset: Path, output: Path, settings: M03Settings) -
     expected = {
         "schema": SIDECAR_SCHEMA, "probe_only": True, "dataset": str(dataset),
         "dataset_sha256": _sha256(dataset), "settings": asdict(settings),
+        "direct_input_protocol": DIRECT_INPUT_PROTOCOL,
     }
     for name, value in expected.items():
         if manifest.get(name) != value:
@@ -522,12 +606,21 @@ def _load_or_build_sidecar(dataset: Path, output: Path, settings: M03Settings) -
             or manifest["replay"].get("root_pixel_tolerance") != REPLAY_PIXEL_TOLERANCE
             or manifest["replay"].get("root_pixel_max_abs", float("inf")) > REPLAY_PIXEL_TOLERANCE):
         raise ValueError("m03_resume: cached sidecar did not pass exact root replay")
+    if (manifest.get("fork", {}).get("status") != "pass"
+            or manifest["fork"].get("primary_protocol") != PRIMARY_FORK_PROTOCOL
+            or manifest["fork"].get("mode_protocol") != MODE_FORK_PROTOCOL
+            or manifest["fork"].get("factual_pixel_tolerance") != REPLAY_PIXEL_TOLERANCE
+            or manifest["fork"].get("factual_pixel_max_abs", float("inf")) > REPLAY_PIXEL_TOLERANCE):
+        raise ValueError("m03_resume: cached sidecar did not pass factual all-action replay")
     if _sha256(sidecar_path) != manifest.get("sidecar", {}).get("sha256"):
         raise ValueError("m03_resume: cached sidecar hash mismatch")
     payload = torch.load(sidecar_path, map_location="cpu", weights_only=False)
     if (payload.get("schema") != SIDECAR_SCHEMA or payload.get("probe_only") is not True
             or payload.get("dataset_sha256") != expected["dataset_sha256"]
-            or payload.get("settings") != expected["settings"]):
+            or payload.get("settings") != expected["settings"]
+            or payload.get("direct_input_protocol") != DIRECT_INPUT_PROTOCOL
+            or payload.get("primary_fork_protocol") != PRIMARY_FORK_PROTOCOL
+            or payload.get("mode_fork_protocol") != MODE_FORK_PROTOCOL):
         raise ValueError("m03_resume: cached sidecar payload contract mismatch")
     return payload, manifest
 
@@ -726,28 +819,111 @@ def _encode_lewm(bundle: ModelBundle, values: dict[str, Any], settings: M03Setti
 @torch.inference_mode()
 def _encode_legacy(bundle: ModelBundle, values: dict[str, Any], settings: M03Settings) -> dict[str, Tensor]:
     context, actions, successors = values["context"], values["past_actions"], values["successors"]
+    if context.shape[1] != settings.direct_context or actions.shape[1] != settings.direct_context - 1:
+        raise ValueError("m03_direct_context: sidecar does not carry the sealed native Direct prefix")
+    first_incoming = values.get("direct_first_action")
+    if not isinstance(first_incoming, Tensor) or first_incoming.shape != (len(context),):
+        raise ValueError("m03_direct_context: sidecar lacks the first incoming action for each native prefix")
+    required = max(bundle.config.receptive_field, bundle.config.dynamics_context)
+    if settings.direct_context < required:
+        raise ValueError(f"m03_direct_context: {settings.direct_context} truncates native Direct context {required}")
     root, observed_successor, generated = [], [], []
     device = bundle.device
     all_actions = torch.arange(bundle.n_actions, device=device, dtype=torch.long)
-    for start in range(0, len(context), settings.encode_batch):
-        end = min(len(context), start + settings.encode_batch)
+    for start in range(0, len(context), settings.direct_encode_batch):
+        end = min(len(context), start + settings.direct_encode_batch)
         frame, past = context[start:end].to(device), actions[start:end].to(device)
-        # Unlike joint LeWM, the legacy MAE encoder has an observation-memory
-        # cache.  Reconstruct the real state through its public observation path
-        # so each all-action branch can legitimately consume successor pixels.
-        state = None
-        for offset in range(settings.legacy_context):
-            incoming = None if offset == 0 else past[:, offset-1:offset]
-            state, _ = bundle.observe(state, incoming, frame[:, offset:offset+1])
+        first = first_incoming[start:end, None].to(device)
+        # This is intentionally the archived Direct transfer contract: encode the
+        # complete native prefix in one causal pass, construct the world state from
+        # every encoded block, then encode each real successor appended to that same
+        # prefix.  A 16-frame sequential reconstruction would truncate both the
+        # MAE encoder's 31-frame receptive field and the world's 48-step cache.
+        context_latent = bundle.encode(frame)
+        state = bundle.prefill(context_latent, past, first_action=first)
         branches = bundle.repeat_state(state, bundle.n_actions)
         action = all_actions.repeat(end-start)[:, None]
         prediction, _ = bundle.advance(branches, action)
         generated.append(bundle.world_state(prediction).latent[:, 0].flatten(1).reshape(end-start, bundle.n_actions, -1).cpu())
-        observed, _ = bundle.observe(branches, action, successors[start:end].reshape(-1, 1, *successors.shape[-3:]).to(device))
-        observed_successor.append(bundle.world_state(observed).latent[:, 0].flatten(1).reshape(end-start, bundle.n_actions, -1).cpu())
-        root.append(bundle.world_state(state).latent[:, 0].flatten(1).cpu())
+        successor_latents = []
+        for action_start in range(0, bundle.n_actions, settings.direct_successor_batch):
+            action_end = min(bundle.n_actions, action_start + settings.direct_successor_batch)
+            branch = successors[start:end, action_start:action_end].to(device)
+            width = action_end - action_start
+            prefix = frame[:, None].expand(end-start, width, *frame.shape[1:])
+            full = torch.cat((prefix, branch[:, :, None]), dim=2).reshape(
+                (end-start) * width, frame.shape[1] + 1, *frame.shape[2:]
+            )
+            successor_latents.append(bundle.encode(full)[:, -1].flatten(1).reshape(end-start, width, -1).cpu())
+        observed_successor.append(torch.cat(successor_latents, dim=1))
+        root.append(context_latent[:, -1].flatten(1).cpu())
     return {"projected": torch.cat(root), "observed_successor": torch.cat(observed_successor),
             "generated_successor": torch.cat(generated)}
+
+
+@torch.inference_mode()
+def _legacy_native_parity_preflight(bundle: ModelBundle, values: dict[str, Any],
+                                    settings: M03Settings) -> dict[str, Any]:
+    """Prove one M03 Direct row agrees with the archived production evaluator.
+
+    ``_encode_legacy`` intentionally uses the adapter API, which is what the
+    gate needs for normal execution.  This short preflight follows the older
+    evaluator's explicit encoder/``commit_inputs``/world path instead.  It
+    protects the easy-to-miss first-incoming-action and full-prefix contract
+    without importing any old labels, heads, or reported measurements.
+    """
+
+    from .transition import commit_inputs
+
+    if bundle.config.transition != "direct":
+        raise ValueError("m03_direct_parity: requires a Direct anchor")
+    one = {
+        "context": values["context"][:1],
+        "past_actions": values["past_actions"][:1],
+        "successors": values["successors"][:1],
+        "direct_first_action": values["direct_first_action"][:1],
+    }
+    candidate = _encode_legacy(bundle, one, settings)
+    frame = one["context"].to(bundle.device)
+    past = one["past_actions"].to(bundle.device)
+    first = one["direct_first_action"][:, None].to(bundle.device)
+    successors = one["successors"].to(bundle.device)
+
+    # This is the historical Direct evaluator's production calculation, stated
+    # here without the adapter: full causal encoder prefix, one committed world
+    # pass with the incoming first action, and all seventeen next-action heads.
+    history = bundle.encode(frame)
+    led_to_action = torch.cat((first, past), dim=1)
+    committed, conditioning = commit_inputs(history, None, bundle.config)
+    features, _, _ = bundle.world(None, led_to_action, committed, conditioning)
+    actions = torch.arange(bundle.n_actions, dtype=torch.long, device=bundle.device)[None]
+    generated = bundle.world.predict(
+        features[:, -1:].expand(1, bundle.n_actions, *features.shape[2:]), actions
+    ).flatten(2).cpu()
+    observed_chunks = []
+    for start in range(0, bundle.n_actions, settings.direct_successor_batch):
+        end = min(bundle.n_actions, start + settings.direct_successor_batch)
+        full = torch.cat((frame.expand(end - start, *frame.shape[1:]), successors[0, start:end, None]), dim=1)
+        observed_chunks.append(bundle.encode(full)[:, -1].flatten(1).cpu())
+    reference = {
+        "projected": history[:, -1].flatten(1).cpu(),
+        "observed_successor": torch.cat(observed_chunks)[None],
+        "generated_successor": generated,
+    }
+    max_abs = {
+        name: float((candidate[name] - reference[name]).abs().max().item())
+        for name in reference
+    }
+    maximum = max(max_abs.values())
+    return {
+        "status": "pass" if maximum <= DIRECT_NATIVE_PARITY_TOLERANCE else "fail",
+        "protocol": DIRECT_INPUT_PROTOCOL,
+        "reference": "archived_direct_full_prefix_encoder_commit_world_v1",
+        "row": 0,
+        "tolerance": DIRECT_NATIVE_PARITY_TOLERANCE,
+        "max_abs": max_abs,
+        "maximum_max_abs": maximum,
+    }
 
 
 def _standardize(train: Tensor, dev: Tensor) -> tuple[Tensor, Tensor]:
@@ -808,7 +984,9 @@ def _ridge_predict(train_x: Tensor, train_y: Tensor, dev_x: Tensor, ridge: float
     train_x, dev_x = _standardize(train_x.float(), dev_x.float())
     y = train_y.float()
     kernel = train_x @ train_x.T
-    solution = torch.linalg.solve(kernel + ridge * torch.eye(len(train_x)), y)
+    solution = torch.linalg.solve(
+        kernel + ridge * torch.eye(len(train_x), device=train_x.device, dtype=train_x.dtype), y
+    )
     return (dev_x @ train_x.T @ solution).cpu()
 
 
@@ -1321,6 +1499,7 @@ def run_gate(*, raw_checkpoint: Path, tc_checkpoint: Path, dataset: Path, output
     feature_rows: dict[str, dict[str, Tensor]] = {}
     feature_manifests: dict[str, str] = {}
     parents: dict[str, Any] = {}
+    direct_native_preflights: dict[str, dict[str, Any]] = {}
     for variant, path in (("raw", raw_checkpoint), ("tc", tc_checkpoint)):
         bundle, payload, source = load_m03_bundle(path, device=device, dataset_sha256=sidecar["dataset_sha256"])
         parents[variant] = {"path": str(Path(path).resolve()), "sha256": _sha256(path), "step": payload["step"],
@@ -1339,6 +1518,29 @@ def run_gate(*, raw_checkpoint: Path, tc_checkpoint: Path, dataset: Path, output
     if include_direct:
         for name in ("direct_attention", "direct_mamba"):
             bundle, parents[name] = _legacy_anchor(name, device=device)
+            # Persist the parity proof independently.  If a process stops while
+            # later Direct features are running, a resume checks this immutable
+            # record rather than trusting an unrecorded in-memory preflight.
+            direct_native_preflights[name] = _load_or_compute_stage(
+                output,
+                f"native_direct_parity_{name}",
+                {
+                    "sidecar_sha256": sidecar_sha256,
+                    "anchor": parents[name],
+                    "protocol": DIRECT_INPUT_PROTOCOL,
+                    "tolerance": DIRECT_NATIVE_PARITY_TOLERANCE,
+                },
+                lambda b=bundle: _legacy_native_parity_preflight(
+                    b, sidecar["splits"]["dev"], settings
+                ),
+            )
+            if direct_native_preflights[name].get("status") != "pass":
+                raise RuntimeError(
+                    f"m03_direct_parity: {name} disagrees with the native production route: "
+                    f"{direct_native_preflights[name]}"
+                )
+            _write_status(output, "native_direct_parity_ready", arm=name,
+                          sidecar_sha256=sidecar_sha256)
             for split in ("train", "dev"):
                 features, manifest_sha256 = _load_or_encode_features(
                     output, arm=name, split=split, identity=parents[name], sidecar_sha256=sidecar_sha256,
@@ -1392,6 +1594,7 @@ def run_gate(*, raw_checkpoint: Path, tc_checkpoint: Path, dataset: Path, output
         "execution": {"device": device, "mode": "structural_smoke" if structural_smoke else "sealed_full_gate",
                       "direct_anchors_included": include_direct},
         "sidecar": sidecar_manifest,
+        "native_direct_parity": direct_native_preflights,
         "static_retention": static, "all_action_one_step": outcomes, "advisory": advisory,
         "decision": _decision(static, outcomes, sidecar, structural_smoke=structural_smoke),
     }

@@ -5,10 +5,13 @@ from d4mj.m03_capability import (
     M03Settings,
     REPLAY_PIXEL_TOLERANCE,
     _binary_metrics,
+    _direct_first_incoming_action,
     _fit_probe_many,
     _load_or_compute_stage,
     _mode_summary,
     _paired_binary_difference,
+    _recorded_step_key,
+    _ridge_predict,
 )
 
 
@@ -18,10 +21,34 @@ def _settings():
                        minimum_negative=1)
 
 
-def test_settings_reject_an_incompatible_legacy_context():
+def test_settings_reject_an_incompatible_direct_context():
     with pytest.raises(ValueError, match="context"):
-        M03Settings(legacy_context=3, lewm_context=4)
+        M03Settings(direct_context=16, lewm_context=4)
     assert REPLAY_PIXEL_TOLERANCE == 1
+
+
+def test_recorded_step_key_uses_the_logged_outgoing_transition_key():
+    class Replay:
+        @staticmethod
+        def _slot_keys(shard, slot):
+            assert (shard, slot) == (7, 3)
+            return "reset", ("step-0", "step-1", "step-2")
+
+    assert _recorded_step_key(Replay(), {"shard": 7, "slot": 3, "t": 2}) == "step-2"
+
+
+def test_direct_prefix_keeps_its_real_first_incoming_action():
+    actions = torch.tensor([4, 2, 7]).numpy()
+    assert _direct_first_incoming_action(actions, 0) == 17
+    assert _direct_first_incoming_action(actions, 2) == 2
+
+
+def test_ridge_control_returns_cpu_predictions_from_its_input_device():
+    train_x = torch.tensor([[0.0], [1.0], [2.0]])
+    train_y = torch.tensor([[0.0], [1.0], [2.0]])
+    prediction = _ridge_predict(train_x, train_y, torch.tensor([[1.5]]), ridge=1.0)
+    assert prediction.device.type == "cpu"
+    assert prediction.shape == (1, 1)
 
 
 def test_binary_metrics_bootstraps_one_root_and_all_action_targets_correctly():
