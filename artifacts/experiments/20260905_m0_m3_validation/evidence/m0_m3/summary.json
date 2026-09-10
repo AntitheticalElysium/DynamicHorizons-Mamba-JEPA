@@ -1,0 +1,87 @@
+{
+  "scope": "M0-M3 implementation mechanics and bounded target-GPU verification; no research result",
+  "cpu_pytest": {
+    "passed": 187,
+    "skipped": 5,
+    "command": "OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 .venv/bin/python -m pytest d4mj/tests -q"
+  },
+  "gpu_preflight": {
+    "raw": {
+      "recipe_id": "2cea3abc53fcf9f5ee08da71cbfd521de7330199600c2ee00ace34e1a96ffad2",
+      "components": {
+        "source_identity": "pass",
+        "dataset": "pass",
+        "device": "pass",
+        "objective_source": "pass",
+        "model_construction": "pass",
+        "recurrence": "pass",
+        "normalization": "pass",
+        "joint_resource": "pass"
+      },
+      "resource": {
+        "actual_batch": 128,
+        "frames": 4,
+        "precision": "bf16",
+        "peak_allocated_bytes": 952169984,
+        "peak_reserved_bytes": 1193279488,
+        "warm_step_seconds": 0.3484044674987672,
+        "encoder_gradient": 1.807517170906067,
+        "predictor_gradient": 0.1535043716430664,
+        "gpu_validated": true,
+        "device_name": "NVIDIA GeForce RTX 3060 Laptop GPU",
+        "device_total_bytes": 6076104704,
+        "optimizer_steps": 3,
+        "purpose": "resource_only_not_a_learning_result"
+      }
+    },
+    "tc": {
+      "recipe_id": "06a7d43534d3a09cb5b50b15aa9ddf9a26e0302bb6d1ab913dca0aef24225626",
+      "components": {
+        "source_identity": "pass",
+        "dataset": "pass",
+        "device": "pass",
+        "objective_source": "pass",
+        "model_construction": "pass",
+        "recurrence": "pass",
+        "normalization": "pass",
+        "joint_resource": "pass"
+      },
+      "resource": {
+        "actual_batch": 128,
+        "frames": 4,
+        "precision": "bf16",
+        "peak_allocated_bytes": 952169984,
+        "peak_reserved_bytes": 1193279488,
+        "warm_step_seconds": 0.3022407630014641,
+        "encoder_gradient": 0.15095432102680206,
+        "predictor_gradient": 0.10035359114408493,
+        "gpu_validated": true,
+        "device_name": "NVIDIA GeForce RTX 3060 Laptop GPU",
+        "device_total_bytes": 6076104704,
+        "optimizer_steps": 3,
+        "purpose": "resource_only_not_a_learning_result"
+      }
+    }
+  },
+  "gpu_resume": {
+    "scope": "full B128/F4/J1024 BF16 architecture, verification only; four updates of unchanged 10000-update schedule",
+    "state_max_abs": {
+      "encoder": 0.0,
+      "world": 0.0
+    },
+    "metrics_exact": true,
+    "screen_sha256_preserved": "683684d6c248bb6ea7c72564f20873d0a58e86f673282a3b2edbc83661b89b9a",
+    "snapshots": {
+      "schema": "d4mj_lewm_checkpoints_v1",
+      "snapshots": {
+        "step-000002.pt": "683684d6c248bb6ea7c72564f20873d0a58e86f673282a3b2edbc83661b89b9a",
+        "step-000004.pt": "71a44bbec73de7288789362a8ccb94799a0ac1c03659dab925da77cc695804ac"
+      },
+      "latest": "step-000004.pt"
+    },
+    "recipe_id": "06a7d43534d3a09cb5b50b15aa9ddf9a26e0302bb6d1ab913dca0aef24225626",
+    "cuda_device": "NVIDIA GeForce RTX 3060 Laptop GPU",
+    "m4_authorized": false
+  },
+  "m4_authorized": false
+}

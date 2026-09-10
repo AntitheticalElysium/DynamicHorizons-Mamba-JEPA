@@ -1,0 +1,91 @@
+{
+  "dynamics": {
+    "A_init_range": [
+      1.0,
+      16.0
+    ],
+    "action_dim": 64,
+    "backend": "triton",
+    "bias": false,
+    "chunk_size": 256,
+    "conv_bias": true,
+    "d_conv": 4,
+    "d_state": 64,
+    "depth": 6,
+    "dt_init_floor": 0.0001,
+    "dt_limit": [
+      0.0,
+      "inf"
+    ],
+    "dt_max": 0.1,
+    "dt_min": 0.001,
+    "expand": 1,
+    "headdim": 64,
+    "n_actions": 17,
+    "ngroups": 1,
+    "norm_before_gate": false,
+    "norm_eps": 1e-05,
+    "width": 256
+  },
+  "encoder": {
+    "attention_backend": "sdpa",
+    "bn_eps": 1e-05,
+    "bn_momentum": 0.1,
+    "channels": 3,
+    "checkpoint_blocks": true,
+    "depth": 12,
+    "dropout": 0.0,
+    "heads": 3,
+    "initializer_range": 0.02,
+    "latent_dim": 192,
+    "layer_norm_eps": 1e-12,
+    "mlp_ratio": 4,
+    "patch": 7,
+    "pixel_mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "pixel_std": [
+      0.229,
+      0.224,
+      0.225
+    ],
+    "projector_hidden": 2048,
+    "qkv_bias": true,
+    "resolution": 63,
+    "width": 192
+  },
+  "family": "lewm_mamba",
+  "joint": {
+    "batch": 128,
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "checkpoint_every": 500,
+    "frames": 4,
+    "grad_clip": 1.0,
+    "knots": 17,
+    "learning_rate": 5e-05,
+    "min_learning_rate": 5e-06,
+    "optimizer_eps": 1e-08,
+    "projections": 1024,
+    "screen_step": 2000,
+    "sigreg_weight": 0.09,
+    "steps": 10000,
+    "warmup": 500,
+    "weight_decay": 0.001
+  },
+  "runtime": {
+    "cache_chunk": 128,
+    "cache_dtype": "float32",
+    "device": "cuda",
+    "memory_budget_bytes": 6442450944,
+    "precision": "bf16",
+    "purpose": "verification"
+  },
+  "schema": "d4mj_lewm_recipe_v1",
+  "seed": 20260731,
+  "variant": "raw"
+}

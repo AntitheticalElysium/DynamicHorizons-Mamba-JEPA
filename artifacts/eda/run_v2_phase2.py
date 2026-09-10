@@ -87,14 +87,42 @@ def main() -> None:
     parser.add_argument("--roots", type=int, default=2, help="v2 roots per step")
     parser.add_argument("--mass", type=float, default=0.2)
     parser.add_argument("--expert", type=int, default=320)
+    # An alignment arm is a separate world that needs its own Phase 2. Without explicit
+    # routing it would either read the control's world or overwrite the control's output.
+    parser.add_argument("--rollout-only", action="store_true",
+                        help="score the heads only on the generated blocks, the ones "
+                             "where the observed and generated readouts can differ")
+    parser.add_argument("--freeze-world", action="store_true",
+                        help="head-extraction ceiling: optimise the heads only, so a "
+                             "difference between arms cannot come from the world")
+    parser.add_argument("--paired-semantic", action="store_true",
+                        help="score the observed readout alongside the generated one "
+                             "against the same real targets, at half weight each")
+    parser.add_argument("--source", type=Path, default=None)
+    parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
-    source = HERE / f"v2_direct_{args.arm}"
-    out = HERE / f"v2_phase2_{args.arm}"
+    source = args.source or HERE / f"v2_direct_{args.arm}"
+    out = args.out or HERE / f"v2_phase2_{args.arm}"
     out.mkdir(parents=True, exist_ok=True)
 
     base = replace(Config(), n_latents=64, d_bottleneck=16)
-    config = replace(base, transition="direct", time_mixer=args.arm)
+    # The world arrives as a bare state dict, so nothing here would catch a config that
+    # differs from the one it was trained under. Phase 2 keeps training the world for
+    # another 10k steps, so inheriting the Phase-1B alignment weight is what stops this
+    # phase from quietly undoing the intervention it is meant to carry.
+    trained = json.loads((source / "training_report.json").read_text())
+    # Sequence and rollout depth are architectural: `dynamics_context` bounds the world's
+    # attention memory, and `direct_rollout` sets how many blocks `_direct_loss` generates.
+    # A Phase 2 that inherited only `align_weight` would rebuild a 16/64/48 world around a
+    # 32/128/96 checkpoint and fail -- or worse, train the wrong rollout depth.
+    if "sequence" in trained:
+        base = replace(base, sequence=trained["sequence"],
+                       sequence_long=trained["sequence_long"],
+                       dynamics_context=trained["dynamics_context"])
+    config = replace(base, transition="direct", time_mixer=args.arm,
+                     align_weight=trained.get("align_weight", 0.0),
+                     direct_rollout=trained.get("direct_rollout", base.direct_rollout))
     world = World(config).to(DEVICE)
     world.load_state_dict(torch.load(source / "world.pt", weights_only=False)["world"])
 
@@ -107,7 +135,10 @@ def main() -> None:
     heads = train_agent(episodes, world, args.steps, config,
                         checkpoint=out / "phase2.pt", world_steps=20_000,
                         counterfactual=sampler(pack, args.roots, config.seed + 11),
-                        counterfactual_mass=args.mass)
+                        counterfactual_mass=args.mass,
+                        paired_semantic=args.paired_semantic,
+                        rollout_only=args.rollout_only,
+                        freeze_world=args.freeze_world)
     save(out / "phase2_final.pt", config, part0=world, part1=heads)
     torch.save({"world": world.state_dict()}, out / "world.pt")
     # the evaluators read the mixer from here; without it they default to attention and
@@ -115,7 +146,12 @@ def main() -> None:
     (out / "training_report.json").write_text(json.dumps(
         {"phase": 2, "arm": args.arm, "time_mixer": args.arm, "steps": args.steps,
          "counterfactual_roots": args.roots, "counterfactual_mass": args.mass,
-         "source": str(source), "seed": config.seed}, indent=2))
+         "align_weight": config.align_weight, "direct_rollout": config.direct_rollout,
+         "sequence": config.sequence, "sequence_long": config.sequence_long,
+         "dynamics_context": config.dynamics_context,
+         "paired_semantic": args.paired_semantic, "freeze_world": args.freeze_world,
+         "rollout_only": args.rollout_only,
+         "source": str(source), "out": str(out), "seed": config.seed}, indent=2))
     print(f"phase 2 {args.arm} complete", flush=True)
 
 

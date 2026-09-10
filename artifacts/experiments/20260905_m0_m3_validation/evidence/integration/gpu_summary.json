@@ -1,0 +1,82 @@
+{
+  "scope": "post-integration mechanics; no learning or control result",
+  "device": "NVIDIA GeForce RTX 3060 Laptop GPU",
+  "gpu_preflight": {
+    "raw": {
+      "recipe_id": "2cea3abc53fcf9f5ee08da71cbfd521de7330199600c2ee00ace34e1a96ffad2",
+      "components": {
+        "source_identity": "pass",
+        "dataset": "pass",
+        "device": "pass",
+        "objective_source": "pass",
+        "model_construction": "pass",
+        "recurrence": "pass",
+        "normalization": "pass",
+        "joint_resource": "pass"
+      },
+      "resource": {
+        "actual_batch": 128,
+        "frames": 4,
+        "precision": "bf16",
+        "peak_allocated_bytes": 952169984,
+        "peak_reserved_bytes": 1193279488,
+        "warm_step_seconds": 0.2847423624999692,
+        "encoder_gradient": 1.807517170906067,
+        "predictor_gradient": 0.1535043716430664,
+        "gpu_validated": true,
+        "device_name": "NVIDIA GeForce RTX 3060 Laptop GPU",
+        "device_total_bytes": 6076104704,
+        "optimizer_steps": 3,
+        "purpose": "resource_only_not_a_learning_result"
+      }
+    },
+    "tc": {
+      "recipe_id": "06a7d43534d3a09cb5b50b15aa9ddf9a26e0302bb6d1ab913dca0aef24225626",
+      "components": {
+        "source_identity": "pass",
+        "dataset": "pass",
+        "device": "pass",
+        "objective_source": "pass",
+        "model_construction": "pass",
+        "recurrence": "pass",
+        "normalization": "pass",
+        "joint_resource": "pass"
+      },
+      "resource": {
+        "actual_batch": 128,
+        "frames": 4,
+        "precision": "bf16",
+        "peak_allocated_bytes": 952169984,
+        "peak_reserved_bytes": 1193279488,
+        "warm_step_seconds": 0.2865736254999547,
+        "encoder_gradient": 0.15095432102680206,
+        "predictor_gradient": 0.10035359114408493,
+        "gpu_validated": true,
+        "device_name": "NVIDIA GeForce RTX 3060 Laptop GPU",
+        "device_total_bytes": 6076104704,
+        "optimizer_steps": 3,
+        "purpose": "resource_only_not_a_learning_result"
+      }
+    }
+  },
+  "m4_authorized": false,
+  "full_architecture_resume": {
+    "updates": "4 versus 2+2",
+    "weights_and_bn": "bit_exact",
+    "metrics": "exact",
+    "immutable_parent_sha256": "f1ed42f0fda624a7e88f0ef669b2c81cf954c0774ddcfc7b65cb05fad253eb08",
+    "snapshots": {
+      "schema": "d4mj_lewm_checkpoints_v1",
+      "snapshots": {
+        "step-000002.pt": "f1ed42f0fda624a7e88f0ef669b2c81cf954c0774ddcfc7b65cb05fad253eb08",
+        "step-000004.pt": "9870c37008627248fd1401bdc463f512fe39d1f50424d780b457ba65772ac7b2"
+      },
+      "latest": "step-000004.pt"
+    },
+    "recipe_steps": 10000,
+    "batch": 128,
+    "frames": 4,
+    "projections": 1024,
+    "precision": "bf16"
+  }
+}

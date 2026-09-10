@@ -6,7 +6,8 @@ from torch import Tensor
 from .agent import Heads
 from .config import Config
 from .state import WorldState
-from .transition import World, advance
+from .transition import World
+from .world_api import ModelBundle
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,8 @@ def imagine(
     causes is read at lead 0 of the *next* readout (S22). Policy and world noise use
     separate generators, or flow's extra draws would desynchronise the arms.
     """
+    bundle = ModelBundle.from_models(config, None, world)
+    bundle.require_control()
     readout = heads(agent)
     actions, step_logits, rewards, continuations = [], [], [], []
     values = [_expect(readout["value"][:, -1], heads.centers)]
@@ -47,7 +50,7 @@ def imagine(
     for _ in range(config.horizon):
         logits = readout["policy"][:, -1, 0]
         action = torch.multinomial(logits.softmax(-1), 1, generator=policy_rng).squeeze(-1)
-        state, agent = advance(world, state, action[:, None], rng, config)
+        state, agent = bundle.advance(state, action[:, None], rng)
         readout = heads(agent)
 
         actions.append(action)

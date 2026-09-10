@@ -381,6 +381,14 @@ def main() -> None:
                         help="marks the contract, so a smoke checkpoint can never be "
                              "mistaken for a real run's resume point")
     parser.add_argument("--overwrite", action="store_true")
+    # Dreamer 4 reports C = 3*T_short and T_long = 4*T_short, which `Config` asserts, so
+    # the short length determines the other two. A 16-step rollout needs a longer row: at
+    # sequence 16 it would leave no observed prefix at all, and the assert would reject it.
+    parser.add_argument("--sequence", type=int, default=None)
+    parser.add_argument("--direct-rollout", type=int, default=None)
+    parser.add_argument("--align-weight", type=float, default=0.0,
+                        help="stop-gradient pull of the generated readout onto the "
+                             "observed one at the matched rollout positions")
     args = parser.parse_args()
     out = args.out = args.out or HERE / f"terminal_{args.arm}"
     out.mkdir(parents=True, exist_ok=True)
@@ -405,7 +413,14 @@ def main() -> None:
         "undefined when only one of them is supervised per presentation")
 
     base = replace(Config(), n_latents=64, d_bottleneck=16)
-    config = replace(base, transition="direct", time_mixer=args.time_mixer)
+    if args.sequence is not None:
+        base = replace(base, sequence=args.sequence,
+                       dynamics_context=3 * args.sequence,
+                       sequence_long=4 * args.sequence)
+    if args.direct_rollout is not None:
+        base = replace(base, direct_rollout=args.direct_rollout)
+    config = replace(base, transition="direct", time_mixer=args.time_mixer,
+                     align_weight=args.align_weight)
     if args.seed is not None:
         config = replace(config, seed=args.seed)
     digest = json.loads((CACHE / "manifest.json").read_text())["cache_digest"]
@@ -568,6 +583,9 @@ def main() -> None:
          "terminal_mass": args.terminal_mass, "balance_outcomes": args.balance_outcomes,
          "root_source": args.roots, "regime_balance": args.regime_balance,
          "time_mixer": args.time_mixer, "second_weight": args.second_weight,
+         "align_weight": args.align_weight, "direct_rollout": config.direct_rollout,
+         "sequence": config.sequence, "sequence_long": config.sequence_long,
+         "dynamics_context": config.dynamics_context,
          "regime_presentations": {k: int(seen[v].sum()) for k, v in groups.items()},
          "regime_repeats_per_root": {k: (float(seen[v].mean()) if len(v) else 0.0)
                                      for k, v in groups.items()},

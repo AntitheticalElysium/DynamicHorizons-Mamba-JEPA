@@ -1,0 +1,287 @@
+{
+  "schema": "d4mj_lewm_gates_v1",
+  "recipe_id": "3edb1419b5f3288f89ce4f1e2c01c04b63b9e398ce18c530353960d400a15925",
+  "dataset_id": "fff6980a29e6afc3086778a3dfb33faa7c270ef544e1555d8afc5eb84bc117bb",
+  "components": {
+    "source_identity": {
+      "status": "pass",
+      "detail": {
+        "versions": {
+          "torch": "2.13.0",
+          "transformers": "5.13.0",
+          "mamba-ssm": "2.3.2.post1",
+          "triton": "3.7.1",
+          "einops": "0.8.2",
+          "numpy": "2.1.0",
+          "safetensors": "0.8.0"
+        }
+      }
+    },
+    "dataset": {
+      "status": "pass",
+      "detail": {
+        "split_counts": {
+          "train": 8069,
+          "dev": 1009,
+          "final": 1002
+        }
+      }
+    },
+    "device": {
+      "status": "pass",
+      "detail": "cuda"
+    },
+    "objective_source": {
+      "status": "pass",
+      "detail": {
+        "source_value": 1.0265271663665771,
+        "absolute_error": 0.0,
+        "centering_offset_error": 0.0
+      }
+    },
+    "model_construction": {
+      "status": "pass",
+      "detail": {
+        "encoder_parameters": 6175872,
+        "world_parameters": 2503496
+      }
+    },
+    "recurrence": {
+      "status": "pass",
+      "detail": {
+        "context_frames": 18,
+        "training_frames": 4,
+        "numerical_profile": "rtx3060_mamba_f577286d_v2",
+        "numerical_checks": [
+          {
+            "precision": "fp32",
+            "profile": "triton_fp32",
+            "rows": [
+              {
+                "length": 2,
+                "scan_step_output_max_abs": 4.887580871582031e-05,
+                "scan_step_conv_max_abs": 0.0,
+                "scan_step_ssm_max_abs": 3.650784492492676e-05,
+                "scan_step_gradient_max_abs": 4.849396646022797e-06,
+                "reference_output_max_abs": 0.0001818835735321045,
+                "reference_ssm_max_abs": 5.4188072681427e-05,
+                "reference_gradient_max_abs": 9.763985872268677e-06
+              },
+              {
+                "length": 17,
+                "scan_step_output_max_abs": 4.565715789794922e-05,
+                "scan_step_conv_max_abs": 7.152557373046875e-07,
+                "scan_step_ssm_max_abs": 9.743496775627136e-06,
+                "scan_step_gradient_max_abs": 2.0065344870090485e-06,
+                "reference_output_max_abs": 0.00015857815742492676,
+                "reference_ssm_max_abs": 4.0568411350250244e-05,
+                "reference_gradient_max_abs": 2.6819761842489243e-06
+              },
+              {
+                "length": 65,
+                "scan_step_output_max_abs": 5.3882598876953125e-05,
+                "scan_step_conv_max_abs": 7.152557373046875e-07,
+                "scan_step_ssm_max_abs": 6.984919309616089e-06,
+                "scan_step_gradient_max_abs": 3.999302862212062e-07,
+                "reference_output_max_abs": 0.0002053976058959961,
+                "reference_ssm_max_abs": 2.3573637008666992e-05,
+                "reference_gradient_max_abs": 8.443021215498447e-07
+              },
+              {
+                "length": 257,
+                "scan_step_output_max_abs": 5.441904067993164e-05,
+                "scan_step_conv_max_abs": 9.5367431640625e-07,
+                "scan_step_ssm_max_abs": 6.583519279956818e-06,
+                "scan_step_gradient_max_abs": 1.0959047358483076e-07,
+                "reference_output_max_abs": 0.00025209784507751465,
+                "reference_ssm_max_abs": 2.9321759939193726e-05,
+                "reference_gradient_max_abs": 2.626475179567933e-07
+              }
+            ],
+            "incoming_state_gradients": true
+          },
+          {
+            "precision": "bf16",
+            "profile": "triton_bf16",
+            "rows": [
+              {
+                "length": 2,
+                "scan_step_output_max_abs": 0.00390625,
+                "scan_step_conv_max_abs": 0.0,
+                "scan_step_ssm_max_abs": 0.00027451664209365845,
+                "scan_step_gradient_max_abs": 0.000244140625,
+                "reference_output_max_abs": 0.0078125,
+                "reference_ssm_max_abs": 0.00020360201597213745,
+                "reference_gradient_max_abs": 0.000244140625
+              },
+              {
+                "length": 17,
+                "scan_step_output_max_abs": 0.0078125,
+                "scan_step_conv_max_abs": 0.0,
+                "scan_step_ssm_max_abs": 0.00011473521590232849,
+                "scan_step_gradient_max_abs": 0.0001220703125,
+                "reference_output_max_abs": 0.0078125,
+                "reference_ssm_max_abs": 6.18230551481247e-05,
+                "reference_gradient_max_abs": 6.103515625e-05
+              },
+              {
+                "length": 65,
+                "scan_step_output_max_abs": 0.0078125,
+                "scan_step_conv_max_abs": 0.0,
+                "scan_step_ssm_max_abs": 6.139278411865234e-05,
+                "scan_step_gradient_max_abs": 0.00018310546875,
+                "reference_output_max_abs": 0.0078125,
+                "reference_ssm_max_abs": 3.983639180660248e-05,
+                "reference_gradient_max_abs": 3.0517578125e-05
+              },
+              {
+                "length": 257,
+                "scan_step_output_max_abs": 0.015625,
+                "scan_step_conv_max_abs": 0.0,
+                "scan_step_ssm_max_abs": 3.8621947169303894e-05,
+                "scan_step_gradient_max_abs": 0.0003662109375,
+                "reference_output_max_abs": 0.0078125,
+                "reference_ssm_max_abs": 4.5357272028923035e-05,
+                "reference_gradient_max_abs": 3.0517578125e-05
+              }
+            ],
+            "incoming_state_gradients": true
+          }
+        ],
+        "world_state_max_abs": 4.0918588638305664e-05,
+        "state_gradient_checked": true,
+        "source_step_error": 4.76837158203125e-07,
+        "memory_effect": 0.012416064739227295,
+        "cuda_kernels_checked": true
+      }
+    },
+    "normalization": {
+      "status": "pass",
+      "detail": {
+        "singleton_batch_parity": true,
+        "buffers_immutable": true
+      }
+    },
+    "joint_resource": {
+      "status": "pass",
+      "detail": {
+        "actual_batch": 128,
+        "frames": 4,
+        "precision": "bf16",
+        "peak_allocated_bytes": 952169984,
+        "peak_reserved_bytes": 1193279488,
+        "warm_step_seconds": 0.5241465085018717,
+        "encoder_gradient": 1.949500560760498,
+        "predictor_gradient": 0.15881064534187317,
+        "gpu_validated": true,
+        "device_name": "NVIDIA GeForce RTX 3060 Laptop GPU",
+        "device_total_bytes": 6076104704,
+        "optimizer_steps": 3,
+        "purpose": "resource_only_not_a_learning_result"
+      }
+    }
+  },
+  "architecture_verdict": "not_evaluated",
+  "m4": {
+    "status": "blocked",
+    "reason": "M4/H16/actor/renderer require subsequent component gates"
+  },
+  "sources": {
+    "schema": "d4mj_lewm_sources_v1",
+    "pins": {
+      "lucas-maes__le-wm": {
+        "url": "https://github.com/lucas-maes/le-wm.git",
+        "commit": "8edfeb336732b5f3ce7b8b210d0ba370a09e2cac"
+      },
+      "galilai-group__stable-pretraining": {
+        "url": "https://github.com/galilai-group/stable-pretraining.git",
+        "commit": "9aa93f8b6153eebb73f57d4853ccf8a13d848310"
+      },
+      "state-spaces__mamba": {
+        "url": "https://github.com/state-spaces/mamba.git",
+        "commit": "f577286d052741c35d39cd43bdc3fad27120f22c"
+      }
+    },
+    "references": {
+      "sources_lock": "e28af969bd86f10f274f1b47dc55bf1f0d6a5208ba1ba535897d964d8b04afdd",
+      "papers_lock": "ba63f70189769007dc90af89efe9a29b5a7fee276ff1e52140ed2f5f49898343",
+      "dependencies_lock": "3a3e19a6b333c6dc466b1f6e8941fd8210ab7eda164416a562dd784ce2034709",
+      "tc_paper": "b15777f14c11b8196a32665a037822425e0016dc7682852ff11c79b4e52b9ef3",
+      "vit_helper": "4254967db78d759b6238c6b9a5ef8219e643b1a5d165d63d5da69d740c4ec6de",
+      "pixel_statistics": "b5063768d173792bbb38a25acf9ea2a599e3adcbea077cf9507ee0c5ca258302",
+      "lucas-maes__le-wm/LICENSE": "4882021920cbd61e050e4dc2e02440e9bd36ea4cbc5803e738a2ee3d63502e07",
+      "galilai-group__stable-pretraining/LICENSE": "8fa02eaa4e67a5455e8ab9268b29e0c283d4b4a5ae239f88282c00392f373bfd",
+      "state-spaces__mamba/LICENSE": "760939b000194d04548ede6a857bbe735d1695d8422ec85955c8e2bd7f4b95c5",
+      "lewm/train.py": "5d5666a785148635f8bcb50b49f98dd4527c5aba8a02d90206eb5d46406079d2",
+      "lewm/module.py": "0b258a9e8dc24c29fcb1e8c50a09ec78b8ea85aeb79e21dd8adf712396646620",
+      "lewm/jepa.py": "41bad7fd21e0f14aea4c9c3d39a9c87037e787746d953ab62cdc0677e938ce96",
+      "lewm/utils.py": "b3e5cfce6d0eecd9510f06a7adc178edde86074e1474b899ff739ed8a5355b08",
+      "lewm/config/train/lewm.yaml": "a90ec80bc30a6b33228047222d6b897d4df14b57b4879727b9d8284a00a9d7a3",
+      "lewm/config/train/model/lewm.yaml": "7be97eaa2c83f809b9ea7a6da5a7d3f3c70502c27537383f54db32335e21e42b",
+      "mamba/modules/mamba2.py": "605e4439ff0baec8d8acaf4a191d9f0570eea9900065a065909124c472b08707",
+      "mamba/ops/triton/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mamba/ops/triton/k_activations.py": "ede8d75600b1b01fd867df00eae4a727df9a34ef8091baf965522c36b3dfdf7b",
+      "mamba/ops/triton/layer_norm.py": "0cecae69ed780c07454fe067f9738608a53ebb17ae6046988d13bbbd84ca128b",
+      "mamba/ops/triton/layernorm_gated.py": "eb6252e247b90f1c8a75946efbc1a221e0c4da701b6757ddae49f3495cf7a42f",
+      "mamba/ops/triton/mamba3/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mamba/ops/triton/mamba3/angle_dt.py": "7d99f8cff37371cfbfe9d4dd36f17a16135fb07f2c6e14add3ad4dd5c0034e2e",
+      "mamba/ops/triton/mamba3/grouped_head_reduction.py": "d461ec57ef42e2f04ceb611daba02705a06347793a44cd40f68b5dc45d3a2d2d",
+      "mamba/ops/triton/mamba3/mamba3_mimo_rotary_step.py": "e117b5da3d2ddfcfa66673a88dfd88a6d688100291d3b6a1b0b3c24c82ef79d6",
+      "mamba/ops/triton/mamba3/mamba3_mimo_utils.py": "efbdd750f53c67fd882ffe7a3af3d51ac4aaa341e764e0efa92ce8ea51c27b7c",
+      "mamba/ops/triton/mamba3/mamba3_siso_bwd.py": "270639817bf8070c6b3f1fac229826c89344e38e8375e73e95249bf3087355de",
+      "mamba/ops/triton/mamba3/mamba3_siso_combined.py": "410ad57555b5841fba7bd76fdafdc3ddf82741176489c3e3493f5c6f3c0c6012",
+      "mamba/ops/triton/mamba3/mamba3_siso_fwd.py": "34100060eef7316e2a16ede09636a517f10733cc856980869651e21208ad05b0",
+      "mamba/ops/triton/mamba3/mamba3_siso_step.py": "66d2471245e47de4207eb633deb3e8415034f9e718b38d0955f62a6262a3ae61",
+      "mamba/ops/triton/mamba3/utils.py": "9d93fd772c7f256f517e75445261773e469cfeddb8bb76c1f8f16e9feabb3c13",
+      "mamba/ops/triton/selective_state_update.py": "4bc67389730c9fd0ad40569b9ee48de88c699bc9612fbc4607eb5d38c1b4a9b9",
+      "mamba/ops/triton/softplus.py": "addcf96f306dd2c9bf1c9ef9feda42381a6e55ad906dd92e220598fcfec7b508",
+      "mamba/ops/triton/ssd_bmm.py": "5059b16f8fa269cd84e8159ee3c6880e4ccf90e4bedf9c2d733e6bc2baff9587",
+      "mamba/ops/triton/ssd_chunk_scan.py": "055b5ce4cb0f30c84c3e031d775f218227fa0b793359254a2465777097b224f9",
+      "mamba/ops/triton/ssd_chunk_state.py": "6d82771b2f62a7bf84c381c8ef8e4b579a95e0352021d117507a1072e4d71dcd",
+      "mamba/ops/triton/ssd_combined.py": "0b7c4cfa9e994278860e7254c27baa31ca32019a808a423ed24b80eabcbe919d",
+      "mamba/ops/triton/ssd_state_passing.py": "ae1fab6c680cb5312ef746862a2cf8e74157033c80878490cc64fa1f24f88b70"
+    },
+    "runtime": {
+      "transformers_vit": "d6e8e18d0d7c32beaac672b5701f1e83d72df62781e79f8508ca7f3dc0db9de2",
+      "transformers_modeling_utils": "b440b5e30a7b9cd58beeaafa32d0d8da3aef6a6f88fe7f9999bb1065f722a9dc",
+      "transformers_sdpa": "fdf62fb0eb9b5dc0a6796a7e526015865267f271a0d5ac8377968ad05d1454b8",
+      "transformers_config": "0ec851794e2692154466915ecd7344ab77f42b8c1ca7832078bfe9e5af5e506c",
+      "d4mj/lewm_config.py": "8862263e076b8bb62a8fedfe7743dab916cd60d72472e8deeb72f78db14020ef",
+      "d4mj/lewm.py": "b87644febd0851434ba2ac019a86f5c029e8af0ea318343da006c23aacd922f9",
+      "d4mj/mamba_recurrence.py": "8de9df2578d7bf45c9d98acaf51c99d03ca9185c641f8b09ae107370133bf4c0",
+      "d4mj/world_api.py": "fcf2de2c77b1b261fb3633f30273130a7604d6bec547a3d953b7b0e3755d021c",
+      "d4mj/state.py": "20c2fead5ec7a795b40d4a1d6db241f8d8d1432535e0bfd4f2378a139d21b118",
+      "d4mj/config.py": "c1835e1e6e0fae9ca6a40e479f4036fcdc6f8c0c1fa446022aecf7502b5710b0",
+      "d4mj/cache.py": "31aea1bc2b79c2cbbb479304dd81472d4b05c61fc179fe404d254b47f3f2ef90",
+      "d4mj/train.py": "105e9d205639f164253b388c520c6ea6b1fcf6c2d397a2b74e694672755d6339",
+      "d4mj/checkpoint.py": "310f9fa7a54d588961888c5e1de31b2629360368f59562bc73b0e473e1acafbb",
+      "d4mj/data.py": "85fbbe508e85f8dbd2d2a9bedd3ad0857ef605c11a2036e71ba8ec8168703145",
+      "d4mj/sources.py": "b9360c687073e6da566424a985a2dcba5dce424af597a025599c923055e0dcee",
+      "d4mj/gates.py": "89696e961a3bea8a548c6f4772187a4b105761f1348a3504f3db86b9827c7d39",
+      "d4mj/lewm_diagnostics.py": "f977ddd685a7a2465cf42980390fb8e637312f4848b06cd56d5abc02014494b4",
+      "d4mj/experiments.py": "ec5e8a5c9163cbf608c31e5852df77668fcafb14a8823d6684802ceb6849549a",
+      "d4mj/__main__.py": "1399bc986938f34578fa54eb2d0fef80f35b73507d3b5e4024854f7cdb781577",
+      "d4mj/execution.py": "178f31609813e11f07403306bbbfff8faf613a34e511ac651b62c19c122914b4",
+      "d4mj/imagination.py": "f0d110aa70e73fed3669ac0e2a30cf3d13012ed6319dbd9b7967bbf17f9edd91",
+      "d4mj/diagnostics.py": "506a1d47b8a66bae745e78a85db8c80c2392898e86546430091e777292121db9"
+    },
+    "versions": {
+      "torch": "2.13.0",
+      "transformers": "5.13.0",
+      "mamba-ssm": "2.3.2.post1",
+      "triton": "3.7.1",
+      "einops": "0.8.2",
+      "numpy": "2.1.0",
+      "safetensors": "0.8.0"
+    },
+    "execution": {
+      "float32_matmul_precision": "highest",
+      "cuda_matmul_tf32": false,
+      "cudnn_tf32": true,
+      "cudnn_benchmark": false,
+      "cudnn_deterministic": false,
+      "deterministic_algorithms": false,
+      "triton_f32_default": "unset"
+    }
+  }
+}

@@ -1,5 +1,5 @@
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 from pathlib import Path
@@ -8,7 +8,8 @@ from typing import Literal
 import torch
 from torch import Tensor
 
-from .config import Config
+from .config import Config, canonical_json
+from .lewm_config import LeWMConfig
 
 FORMAT = "d4mj_episodes_v3"
 SHARD_FORMAT = "d4mj_episode_shard_v1"
@@ -118,6 +119,13 @@ class EpisodeCorpus(Sequence[Episode]):
             }
         return self._profiles[key]
 
+    def window_weights(self, indices, length: int, *, dtype=torch.float) -> Tensor:
+        """Number of valid windows per episode; callers retain their RNG draw order."""
+        counts = [len(self._episodes[index]) + 2 - length for index in indices]
+        if any(count < 1 for count in counts):
+            raise ValueError("window pool contains an episode shorter than the requested length")
+        return torch.tensor(counts, dtype=dtype)
+
     def draw_window_episode(
         self, pool: str, length: int, rng: torch.Generator
     ) -> Episode:
@@ -126,10 +134,7 @@ class EpisodeCorpus(Sequence[Episode]):
             raise ValueError(f"episode pool {pool!r} is empty at length {length}")
         key = (length, pool)
         if key not in self._draw_tables:
-            self._draw_tables[key] = torch.tensor(
-                [len(self._episodes[index]) + 2 - length for index in indices],
-                dtype=torch.float,
-            )
+            self._draw_tables[key] = self.window_weights(indices, length)
         position = int(torch.multinomial(self._draw_tables[key], 1, generator=rng))
         return self._episodes[indices[position]]
 
@@ -474,3 +479,143 @@ def load_episodes(
     if any(episode.latent_digest != digest for episode in cached):
         raise ValueError("cached latents were produced under a different C*")
     return EpisodeCorpus(episodes, source=path)
+
+
+@dataclass(frozen=True)
+class JointBatch:
+    frames: Tensor
+    actions: Tensor
+    episode_ids: tuple[str, ...]
+    starts: Tensor
+
+    def to(self, device: str):
+        return replace(self, frames=self.frames.to(device), actions=self.actions.to(device))
+
+
+def validate_episode(episode: Episode, config: LeWMConfig) -> None:
+    e = config.encoder
+    if not episode.episode_id or episode.split not in ("train", "dev", "final"):
+        raise ValueError("dataset_lineage: every episode needs an explicit ID and split")
+    if episode.observations is None or episode.latents is not None:
+        raise ValueError("joint_data: joint training requires raw observations, not a latent cache")
+    if (episode.actions_taken.ndim != 1 or episode.rewards.shape != episode.actions_taken.shape
+            or episode.terminated.shape != episode.actions_taken.shape or episode.truncated.shape != episode.actions_taken.shape
+            or len(episode.observations) != len(episode.actions_taken)+1):
+        raise ValueError("joint_data: require T outgoing actions/outcomes and T+1 observations")
+    if episode.observations.dtype != torch.uint8 or episode.observations.shape[1:] != (e.resolution, e.resolution, 3):
+        raise ValueError("joint_data: wrong raw pixel geometry/dtype")
+    if episode.actions_taken.dtype != torch.long:
+        raise ValueError("joint_data: actions must be int64")
+    if bool(((episode.actions_taken < 0) | (episode.actions_taken >= config.dynamics.n_actions)).any()):
+        raise ValueError("joint_data: invalid outgoing action")
+    if episode.terminated.dtype != torch.bool or episode.truncated.dtype != torch.bool:
+        raise ValueError("joint_data: terminal and timeout flags must be boolean")
+    if bool((episode.terminated[:-1] | episode.truncated[:-1]).any()):
+        raise ValueError("joint_data: episode contains a reset boundary before its final successor")
+    if not bool(torch.isfinite(episode.rewards).all()):
+        raise ValueError("joint_data: nonfinite rewards")
+
+
+def audit_episodes(episodes, config: LeWMConfig) -> dict:
+    ids, rows, split_counts = set(), [], {s: 0 for s in ("train", "dev", "final")}
+    for episode in episodes:
+        validate_episode(episode, config)
+        if episode.episode_id in ids:
+            raise ValueError("dataset_split: duplicate episode ID, including across splits")
+        ids.add(episode.episode_id)
+        split_counts[episode.split] += 1
+        rows.append({"id": episode.episode_id, "split": episode.split, "steps": len(episode),
+                     "uniform": episode.uniform_eligible, "bc": episode.bc_eligible,
+                     "epsilon": episode.epsilon, "terminal_cause": episode.terminal_cause,
+                     "terminals": int(episode.terminated.sum()), "timeouts": int(episode.truncated.sum()),
+                     "events": None if episode.events is None else int(episode.events.sum())})
+    if not any(r["split"] == "train" and r["uniform"] and r["steps"] >= config.joint.frames-1 for r in rows):
+        raise ValueError("joint_data: no eligible TRAIN windows")
+    return {"episodes": rows, "split_counts": split_counts,
+            "split_digest": hashlib.sha256(canonical_json(rows).encode()).hexdigest(),
+            "transitions": sum(r["steps"] for r in rows)}
+
+
+def load_joint_corpus(path: str | Path, config: LeWMConfig):
+    """Validate bytes and full episode metadata. Never invent collector/split lineage."""
+    path = Path(path)
+    if path.name == "manifest.json":
+        path = path.parent
+    episodes = load_episodes(path, verify=True)
+    audit = audit_episodes(episodes, config)
+    source_file = path / "manifest.json" if path.is_dir() else path
+    if path.is_dir():
+        manifest = json.loads(source_file.read_text())
+        provenance = {k: v for k, v in manifest.items() if k != "shards"}
+    else:
+        sidecar = path.with_suffix(path.suffix + ".manifest.json")
+        provenance = json.loads(sidecar.read_text()) if sidecar.exists() else {}
+    # Unknown upstream training access remains explicit, never relabeled as zero.
+    contract = {"schema": "d4mj_lewm_dataset_v1", "sha256": _sha256(source_file),
+                "audit": audit, "provenance": provenance,
+                "collector_training_access": provenance.get("collector_training_access", "unknown")}
+    return episodes, contract
+
+
+class JointSampler:
+    def __init__(self, episodes, config: LeWMConfig, generator: torch.Generator):
+        audit_episodes(episodes, config)
+        self.config, self.generator = config, generator
+        self.episodes = EpisodeCorpus(e for e in episodes if e.split == "train" and e.uniform_eligible
+                              and len(e)+1 >= config.joint.frames)
+        self.counts = self.episodes.window_weights(range(len(self.episodes)), config.joint.frames, dtype=torch.float64)
+        self.draws = 0
+
+    def sample(self) -> JointBatch:
+        j = self.config.joint
+        selected = torch.multinomial(self.counts, j.batch, replacement=True, generator=self.generator)
+        frames, actions, ids, starts = [], [], [], []
+        for index in selected.tolist():
+            episode = self.episodes[index]
+            start = int(torch.randint(int(self.counts[index]), (), generator=self.generator))
+            frames.append(episode.observations[start:start+j.frames])
+            actions.append(episode.actions_taken[start:start+j.frames-1])
+            ids.append(episode.episode_id)
+            starts.append(start)
+        self.draws += j.batch
+        return JointBatch(torch.stack(frames), torch.stack(actions), tuple(ids), torch.tensor(starts))
+
+    def state_dict(self):
+        return {"generator": self.generator.get_state(), "draws": self.draws}
+
+    def load_state_dict(self, state):
+        self.generator.set_state(state["generator"].cpu())
+        self.draws = int(state["draws"])
+
+
+def screen_windows(episodes, config: LeWMConfig, screen, split: str) -> dict:
+    """Fixed episode-cluster sample for G1; no FINAL windows or probe-fit leakage."""
+    if split not in ("train", "dev"):
+        raise ValueError("joint screen never selects FINAL")
+    wanted = screen.train_episodes if split == "train" else screen.dev_episodes
+    length = config.joint.frames
+    def order(e):
+        return hashlib.sha256(f"{screen.seed}:{e.episode_id}".encode()).digest()
+    pool = sorted((e for e in episodes if e.split == split and e.uniform_eligible
+                   and len(e)+2-length >= screen.windows_per_episode), key=order)
+    if len(pool) < wanted:
+        raise ValueError(f"screen_coverage: {split} has {len(pool)} eligible episodes, needs {wanted}")
+    frames, actions, labels, valid, ids, starts, clusters = [], [], [], [], [], [], []
+    for cluster, episode in enumerate(pool[:wanted]):
+        rng = torch.Generator().manual_seed(int.from_bytes(order(episode)[:8], "little") % (2**63-1))
+        positions = torch.randperm(len(episode)+2-length, generator=rng)[:screen.windows_per_episode]
+        for start in positions.tolist():
+            end = start+length-1
+            reward = episode.rewards[start:end]
+            event = torch.zeros_like(reward, dtype=torch.bool) if episode.events is None else episode.events[start:end]
+            truth = torch.stack((reward > 0, reward < 0, event, episode.terminated[start:end]), -1)
+            mask = torch.ones_like(truth)
+            if episode.events is None:
+                mask[:, 2] = False
+            frames.append(episode.observations[start:end+1]); actions.append(episode.actions_taken[start:end])
+            labels.append(truth); valid.append(mask); ids.append(episode.episode_id)
+            starts.append(start); clusters.append(cluster)
+    return {"frames": torch.stack(frames), "actions": torch.stack(actions),
+            "labels": torch.stack(labels), "valid": torch.stack(valid), "episode_ids": tuple(ids),
+            "starts": torch.tensor(starts), "clusters": torch.tensor(clusters),
+            "label_names": ("positive_reward", "negative_reward", "achievement_event", "termination")}

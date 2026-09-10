@@ -252,12 +252,17 @@ def commit_inputs(latent: Tensor, rng: torch.Generator, config: Config):
 
 
 def _direct_loss(world: World, batch, rng: torch.Generator, config: Config):
-    """Teacher forcing plus a two-step generated-prefix rollout, after V-JEPA 2-AC
-    (S55). Both generated states are committed through `advance`, and both readouts
-    replace the real ones at their own indices. That is `direct_rollout` states --
-    two -- so imagination beyond it leaves the trained distribution and S68 caps the
-    horizon there. The two rollout terms are averaged, matching the source's
-    `jloss + sloss` of two means; squared error is a declared deviation from its L1.
+    """Teacher forcing plus a generated-prefix rollout, after V-JEPA 2-AC (S55). Every
+    generated state is committed through `advance`, and every readout replaces the real
+    one at its own index. That is `direct_rollout` states, so imagination beyond it
+    leaves the trained distribution and S68 caps the horizon there. The rollout terms are
+    averaged, matching the source's `jloss + sloss` of two means; squared error is a
+    declared deviation from its L1.
+
+    The rollout consumes the last `direct_rollout` blocks of the row, so a row must carry
+    one more block than it generates. `Config` asserts that against `sequence`, the
+    shorter of the two schedules, rather than letting short batches quietly contribute
+    teacher forcing alone.
     """
     committed, conditioning = commit_inputs(batch.latents, rng, config)
     features, agent, memory = world(None, batch.led_to_action, committed, conditioning)
@@ -265,20 +270,31 @@ def _direct_loss(world: World, batch, rng: torch.Generator, config: Config):
     predicted = world.predict(features[:, :-1], taken)
     teacher = (predicted - batch.latents[:, 1:]).pow(2).mean(dim=(1, 2, 3))
 
-    length = batch.latents.shape[1]
-    if length < 3:
+    length, steps = batch.latents.shape[1], config.direct_rollout
+    if length < steps + 1:
         return _uniform_mean(teacher, batch), agent, agent
 
+    start = length - steps
     prefix, _, memory = world(
-        None, batch.led_to_action[:, :-2], committed[:, :-2], conditioning[:, :-2]
+        None, batch.led_to_action[:, :start], committed[:, :start], conditioning[:, :start]
     )
-    state = WorldState(batch.latents[:, -3:-2], memory, length - 2, prefix[:, -1:])
-    first, rolled = advance(world, state, batch.led_to_action[:, -2:-1], rng, config)
-    second, rolled_again = advance(world, first, batch.led_to_action[:, -1:], rng, config)
-    rollout = (first.latent - batch.latents[:, -2:-1]).pow(2).mean(dim=(1, 2, 3))
-    rollout = rollout + (second.latent - batch.latents[:, -1:]).pow(2).mean(dim=(1, 2, 3))
-    readout = torch.cat([agent[:, :-2], rolled, rolled_again], dim=1)
-    return _uniform_mean(teacher + rollout / 2, batch), readout, agent
+    state = WorldState(batch.latents[:, start - 1:start], memory, start, prefix[:, -1:])
+    rollout, generated = torch.zeros_like(teacher), []
+    for index in range(start, length):
+        state, produced = advance(
+            world, state, batch.led_to_action[:, index:index + 1], rng, config
+        )
+        rollout = rollout + (
+            state.latent - batch.latents[:, index:index + 1]
+        ).pow(2).mean(dim=(1, 2, 3))
+        generated.append(produced)
+    readout = torch.cat([agent[:, :start], *generated], dim=1)
+    # `agent` is this same world reading the real latents at these positions, so the two
+    # sides are the observed and generated readouts of one index. Detached on the
+    # observed side, after Dreamer 3's stop-gradient prior/posterior alignment.
+    aligned = (readout[:, start:] - agent[:, start:].detach()).pow(2).mean(dim=(1, 2, 3))
+    combined = teacher + rollout / steps + config.align_weight * aligned
+    return _uniform_mean(combined, batch), readout, agent
 
 
 def _shortcut_loss(world: World, batch, rng: torch.Generator, config: Config, step: int = 0) -> Tensor:

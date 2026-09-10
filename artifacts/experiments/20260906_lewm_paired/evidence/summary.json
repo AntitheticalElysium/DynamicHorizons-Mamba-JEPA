@@ -1,0 +1,155 @@
+{
+  "runtime_commit": "ae896f5d4ce49d1713636794d6cece3673ab4dc7",
+  "g1_decision": "continue_joint_budget",
+  "completed_updates_per_arm": 10000,
+  "final_components": {
+    "completed_pair_identity": "pass",
+    "dataset_and_windows": "pass",
+    "raw_normalization": "pass",
+    "raw_recurrence": "fail",
+    "raw_projection_retention": "pass",
+    "tc_normalization": "pass",
+    "tc_recurrence": "fail",
+    "tc_projection_retention": "pass"
+  },
+  "training_exposure": {
+    "per_arm_sampled_windows": 1280000,
+    "train_episodes_sampled": 8069,
+    "per_arm_repeated_transition_exposures": 3840000,
+    "per_arm_repeated_frame_exposures": 5120000,
+    "dev_or_final_training_windows": 0,
+    "collector_training_access": "unknown"
+  },
+  "recurrence_scope": "failed original sealed full-stack TF32 contract; IEEE intervention reported separately",
+  "critical_semantic_retention": "not_evaluated",
+  "control": "not_evaluated",
+  "m4_authorized": false,
+  "arms": {
+    "raw": {
+      "checkpoint_sha256": "707f6240a3e4e52d6aca7526d541a69112ad7c18c5898c0f1f0ec36f663937ef",
+      "effective_rank": 39.23100947783929,
+      "proxy_projection_differences": {
+        "linear": {
+          "difference": 0.0016302335903036018,
+          "interval": [
+            -0.021640947088599205,
+            0.02239130437374115
+          ],
+          "valid_draws": 1000,
+          "draws": 1000,
+          "unit": "episode",
+          "status": "measured"
+        },
+        "mlp": {
+          "difference": -0.00812101724808112,
+          "interval": [
+            -0.029470738023519516,
+            0.01190102007240057
+          ],
+          "valid_draws": 1000,
+          "draws": 1000,
+          "unit": "episode",
+          "status": "measured"
+        }
+      },
+      "projection_stop": false
+    },
+    "tc": {
+      "checkpoint_sha256": "98effee1085223b5780f30b09ba68b44a8b407acbb07fde5134a8bd708997dc5",
+      "effective_rank": 5.684159488834131,
+      "proxy_projection_differences": {
+        "linear": {
+          "difference": -0.005302529429061027,
+          "interval": [
+            -0.03680688142776489,
+            0.02628321386873722
+          ],
+          "valid_draws": 1000,
+          "draws": 1000,
+          "unit": "episode",
+          "status": "measured"
+        },
+        "mlp": {
+          "difference": -0.05890953994975778,
+          "interval": [
+            -0.0824885442852974,
+            -0.038181569427251816
+          ],
+          "valid_draws": 1000,
+          "draws": 1000,
+          "unit": "episode",
+          "status": "measured"
+        }
+      },
+      "projection_stop": false
+    }
+  },
+  "paired_proxy_comparison": {
+    "direction": "TC projected minus raw projected",
+    "scope": "descriptive short-future proxies; no critical semantic or control claim",
+    "probes": {
+      "linear": {
+        "difference": -0.05446382735031933,
+        "interval": [
+          -0.11232025921344757,
+          0.004739659372717142
+        ],
+        "valid_draws": 1000,
+        "draws": 1000,
+        "unit": "episode",
+        "status": "measured"
+      },
+      "mlp": {
+        "difference": -0.06718793043205995,
+        "interval": [
+          -0.11039051413536072,
+          -0.018037084490060806
+        ],
+        "valid_draws": 1000,
+        "draws": 1000,
+        "unit": "episode",
+        "status": "measured"
+      }
+    }
+  },
+  "ieee_diagnostic": {
+    "execution_change": {
+      "triton_f32_default": [
+        "unset",
+        "ieee"
+      ]
+    },
+    "tolerances_changed": false,
+    "status": {
+      "raw": "pass",
+      "tc": "pass"
+    },
+    "world_state_max_abs": {
+      "raw": 1.9073486328125e-06,
+      "tc": 1.3113021850585938e-06
+    },
+    "training_or_original_gate_reauthorized": false
+  },
+  "fresh_ieee_preflight": {
+    "raw": {
+      "source_identity": "pass",
+      "dataset": "pass",
+      "device": "pass",
+      "objective_source": "pass",
+      "model_construction": "pass",
+      "recurrence": "pass",
+      "normalization": "pass",
+      "joint_resource": "pass"
+    },
+    "tc": {
+      "source_identity": "pass",
+      "dataset": "pass",
+      "device": "pass",
+      "objective_source": "pass",
+      "model_construction": "pass",
+      "recurrence": "pass",
+      "normalization": "pass",
+      "joint_resource": "pass"
+    }
+  }
+}

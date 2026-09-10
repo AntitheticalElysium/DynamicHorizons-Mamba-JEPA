@@ -7,8 +7,29 @@ from torch.utils.flop_counter import FlopCounterMode
 from .agent import Heads, head_targets
 from .config import Config
 from .data import Batch
-from .state import WorldState
 from .transition import World, advance, commit_inputs, initial, transition_loss
+from .world_api import ModelBundle
+
+
+@torch.no_grad()
+def rollout_predictions(bundle, latents, actions, context, rng=None, *, first_action=None):
+    """Observed prefix followed by generated successors through the deployed API.
+
+    Actions are outgoing: T latents have T-1 transitions. Legacy windows may
+    supply their first incoming action; LeWM consumes only completed pairs.
+    This is a mechanical diagnostic, not authorization for policy control.
+    """
+    if not 1 <= context < latents.shape[1]:
+        raise ValueError("context must leave at least one successor")
+    if actions.shape != (latents.shape[0], latents.shape[1] - 1):
+        raise ValueError("rollout requires T latents and T-1 outgoing actions")
+    state = bundle.prefill(latents[:, :context], actions[:, :context-1], rng,
+                           first_action=first_action)
+    predictions = []
+    for step in range(context, latents.shape[1]):
+        state, _ = bundle.advance(state, actions[:, step-1:step], rng)
+        predictions.append(state.latent)
+    return torch.cat(predictions, dim=1), state
 
 
 @torch.no_grad()
@@ -32,14 +53,11 @@ def multistep_error(
     context = min(config.dynamics_context, blocks - 1) if context is None else context
     assert 1 <= context < blocks, f"context {context} leaves nothing to roll over {blocks} blocks"
 
-    committed, conditioning = commit_inputs(batch.latents[:, :context], rng, config)
-    features, _, memory = world(None, batch.led_to_action[:, :context], committed, conditioning)
-    state = WorldState(batch.latents[:, context - 1 : context], memory, context, features[:, -1:])
-
-    report: dict[str, list[float]] = {"mean_error": []}
-    for step in range(context, blocks):
-        state, _ = advance(world, state, batch.led_to_action[:, step : step + 1], rng, config)
-        report["mean_error"].append(float((state.latent - batch.latents[:, step : step + 1]).pow(2).mean()))
+    bundle = ModelBundle.from_models(config, None, world)
+    predicted, state = rollout_predictions(bundle, batch.latents, batch.led_to_action[:, 1:],
+                                          context, rng, first_action=batch.led_to_action[:, :1])
+    report = {"mean_error": [float((predicted[:, i:i+1] - batch.latents[:, context+i:context+i+1])
+                                  .pow(2).mean()) for i in range(blocks-context)]}
 
     if successors is not None:
         gap = (state.latent[:, 0, None] - successors).pow(2).flatten(2).mean(-1)
@@ -60,10 +78,10 @@ def latent_stats(world: World, batch: Batch, rng: torch.Generator, config: Confi
     """
     blocks = batch.latents.shape[1]
     context = min(config.dynamics_context, blocks - 1)
-    committed, conditioning = commit_inputs(batch.latents[:, :context], rng, config)
-    features, _, memory = world(None, batch.led_to_action[:, :context], committed, conditioning)
-    state = WorldState(batch.latents[:, context - 1 : context], memory, context, features[:, -1:])
-    state, _ = advance(world, state, batch.led_to_action[:, context : context + 1], rng, config)
+    bundle = ModelBundle.from_models(config, None, world)
+    _, state = rollout_predictions(bundle, batch.latents[:, :context+1],
+                                   batch.led_to_action[:, 1:context+1], context, rng,
+                                   first_action=batch.led_to_action[:, :1])
 
     real, predicted = batch.latents[:, context : context + 1], state.latent
     return {
@@ -224,3 +242,75 @@ def cost(modules: dict[str, nn.Module], world: World, config: Config) -> dict[st
         "flops_per_step": float(flops),
         "backbone_passes_per_step": config.rungs + 1 if config.transition == "flow" else 1,
     }
+
+
+def binary_auc(scores: Tensor, truth: Tensor) -> float | None:
+    """Mann-Whitney AUC with average ranks for ties; absent classes are not .5."""
+    scores, truth = scores.detach().cpu().double(), truth.detach().cpu().bool()
+    if not bool(torch.isfinite(scores).all()):
+        raise ValueError("probe scores are nonfinite")
+    positive = int(truth.sum()); negative = len(truth)-positive
+    if not positive or not negative:
+        return None
+    order = scores.argsort(); sorted_scores = scores[order]
+    _, counts = torch.unique_consecutive(sorted_scores, return_counts=True)
+    end = counts.cumsum(0).double()
+    ranks = torch.repeat_interleave(end-(counts.double()-1)/2, counts)
+    return float((ranks[truth[order]].sum()-positive*(positive+1)/2)/(positive*negative))
+
+
+def paired_auc_interval(left, right, truth, valid, clusters, *, draws: int, seed: int):
+    """Macro-AUC difference, resampling whole paired episodes with fixed labels."""
+    def delta(indices):
+        values = []
+        for col in range(truth.shape[1]):
+            chosen = indices[valid[indices, col]]
+            a, b = binary_auc(left[chosen, col], truth[chosen, col]), binary_auc(right[chosen, col], truth[chosen, col])
+            if a is None or b is None:
+                return None
+            values.append(a-b)
+        return sum(values)/len(values) if values else None
+    groups = [torch.where(clusters == key)[0] for key in clusters.unique(sorted=True)]
+    point = delta(torch.arange(len(truth)))
+    samples = []
+    rng = torch.Generator().manual_seed(seed)
+    for _ in range(draws):
+        indices = torch.cat([groups[i] for i in torch.randint(len(groups), (len(groups),), generator=rng)])
+        value = delta(indices)
+        if value is not None:
+            samples.append(value)
+    bounds = None if len(samples) < .95*draws else torch.tensor(samples).quantile(torch.tensor([.025, .975])).tolist()
+    return {"difference": point, "interval": bounds, "valid_draws": len(samples), "draws": draws,
+            "unit": "episode", "status": "measured" if bounds is not None else "insufficient_coverage"}
+
+
+def fit_outcome_probe(train_x, train_y, train_valid, dev_x, settings, *, hidden: bool):
+    """Fixed TRAIN-only normalization and optimization, no DEV selection."""
+    from types import SimpleNamespace
+    from .train import optimizer, optimizer_step
+
+    device = train_x.device
+    mean, scale = train_x.mean(0), train_x.std(0, unbiased=False).clamp_min(1e-6)
+    train_x, dev_x = (train_x-mean)/scale, (dev_x-mean)/scale
+    width, outputs = train_x.shape[1], train_y.shape[1]
+    seed = settings.seed + (200 if hidden else 100)
+    devices = list(range(torch.cuda.device_count())) if device.type == "cuda" else []
+    with torch.random.fork_rng(devices=devices):
+        torch.manual_seed(seed)
+        model = (nn.Sequential(nn.Linear(width, settings.probe_hidden), nn.GELU(),
+                               nn.Linear(settings.probe_hidden, outputs)) if hidden else nn.Linear(width, outputs)).to(device)
+    config = SimpleNamespace(learning_rate=settings.probe_lr, weight_decay=settings.probe_decay)
+    opt = optimizer([model], config)
+    positive = (train_y*train_valid).sum(0)
+    negative = ((1-train_y)*train_valid).sum(0)
+    weight = negative/positive.clamp_min(1)
+    rng = torch.Generator(device=device).manual_seed(seed+1)
+    for _ in range(settings.probe_steps):
+        index = torch.randint(len(train_x), (settings.probe_batch,), generator=rng, device=device)
+        losses = nn.functional.binary_cross_entropy_with_logits(model(train_x[index]), train_y[index],
+                                                                 pos_weight=weight, reduction="none")
+        loss = (losses*train_valid[index]).sum()/train_valid[index].sum().clamp_min(1)
+        optimizer_step(opt, loss, model.parameters(), learning_rate=settings.probe_lr,
+                       grad_clip=1.0, strict=True)
+    with torch.no_grad():
+        return model.eval()(dev_x).cpu()

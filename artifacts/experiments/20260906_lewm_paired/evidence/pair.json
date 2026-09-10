@@ -1,0 +1,20 @@
+{
+  "schema": "d4mj_joint_pair_v1",
+  "dataset_id": "fff6980a29e6afc3086778a3dfb33faa7c270ef544e1555d8afc5eb84bc117bb",
+  "initial_identity": {
+    "raw": {
+      "encoder": "6df76f77e3fe8d8bc32fde4bcc6121ce1449a8f101fe4d284e6de330f6b28e46",
+      "world": "2b045d7d38798d227ddec7f7c0961c9ef8676ac1e7c2ac1bd93b94e3d832b53f"
+    },
+    "tc": {
+      "encoder": "6df76f77e3fe8d8bc32fde4bcc6121ce1449a8f101fe4d284e6de330f6b28e46",
+      "world": "2b045d7d38798d227ddec7f7c0961c9ef8676ac1e7c2ac1bd93b94e3d832b53f"
+    }
+  },
+  "screen_settings_id": "47c02a0e74582e8964853e8092661831893171ee9f721094beb8d6a77a1e53d9",
+  "recipes": {
+    "raw": "3edb1419b5f3288f89ce4f1e2c01c04b63b9e398ce18c530353960d400a15925",
+    "tc": "b6e02c7122c2c31d9830907159e0b47a70265e9d392669dbaf3c04379efd4161"
+  },
+  "m4_authorized": false
+}

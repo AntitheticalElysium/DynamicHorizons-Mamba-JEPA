@@ -1,0 +1,43 @@
+{
+  "reference_commit": "162efd178ef72a8eca05730fe3996358162054ad",
+  "device": "NVIDIA GeForce RTX 3060 Laptop GPU",
+  "scope": "exact legacy caller/cache/optimizer parity",
+  "arms": {
+    "flow-attention": {
+      "diagnostics": "bit_exact",
+      "imagination": "bit_exact",
+      "execution_actions_and_results": "exact",
+      "rng_advancement": "exact",
+      "chunked_cache": "bit_exact",
+      "cache_digest": "a318571faaec7845",
+      "optimizer_updates": "bit_exact"
+    },
+    "flow-mamba": {
+      "diagnostics": "bit_exact",
+      "imagination": "bit_exact",
+      "execution_actions_and_results": "exact",
+      "rng_advancement": "exact",
+      "chunked_cache": "bit_exact",
+      "cache_digest": "a318571faaec7845",
+      "optimizer_updates": "bit_exact"
+    },
+    "direct-attention": {
+      "diagnostics": "bit_exact",
+      "imagination": "bit_exact",
+      "execution_actions_and_results": "exact",
+      "rng_advancement": "exact",
+      "chunked_cache": "bit_exact",
+      "cache_digest": "a318571faaec7845",
+      "optimizer_updates": "bit_exact"
+    },
+    "direct-mamba": {
+      "diagnostics": "bit_exact",
+      "imagination": "bit_exact",
+      "execution_actions_and_results": "exact",
+      "rng_advancement": "exact",
+      "chunked_cache": "bit_exact",
+      "cache_digest": "a318571faaec7845",
+      "optimizer_updates": "bit_exact"
+    }
+  }
+}

@@ -3,12 +3,16 @@ import sys
 from . import gates
 from .config import Config
 
-CHECKS = ("alignment", "scan_step_parity", "reset_parity", "firewall", "branch_nonmutation", "recurrent_carry")
+CHECKS = gates.LEGACY_CHECKS
 
 
-def main() -> int:
+def main(argv=None) -> int:
     """Every gate across the Stage-A lattice. An arm that fails one is not a
     result."""
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv != ["gates"]:
+        from .experiments import main as experiment_main
+        return experiment_main(argv)
     arms = [
         Config(transition=transition, time_mixer=mixer)
         for transition in ("flow", "direct")
@@ -17,13 +21,13 @@ def main() -> int:
     failures = 0
     for config in arms:
         name = f"{config.transition}-{config.time_mixer}"
-        for check in CHECKS:
-            try:
-                getattr(gates, check)(config)
+        report = gates.preflight(config)
+        for check, result in report["components"].items():
+            if result["status"] == "pass":
                 print(f"  {name:16s} {check:20s} ok")
-            except Exception as error:
+            else:
                 failures += 1
-                print(f"  {name:16s} {check:20s} FAIL: {error}")
+                print(f"  {name:16s} {check:20s} FAIL: {result['reason']}")
     return 1 if failures else 0
 
 

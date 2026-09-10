@@ -1,5 +1,7 @@
 # Decisions and function plan
 
+Scoped implementation addition: the independent TC-LeWM–Mamba M0–M3 files and methods are listed in the [implemented function map](lewm/STATUS.md#implemented-file-and-api-map), with source/engineering resolutions TC-29–34 in the [decision ledger](lewm/DECISIONS.md). The [integration record](lewm/INTEGRATION.md) documents shared infrastructure and the concrete legacy/new-family adapters. This extends the file/function contract for the new family; legacy functions and S-decisions below remain in force. Later-phase methods in the end-state roadmap are not implemented.
+
 Companion to `ARCHITECTURE.md`. That file says what the system is; this one says
 what is settled, what is open, and exactly which functions exist.
 
@@ -34,7 +36,7 @@ not an implementation detail. If the plan is wrong, fix the plan.
 | S20 | Causal temporal tokenizer, as D4 §3.1 | The primary model follows Dreamer 4. Both arms share one encoder, so the T-vs-M comparison stays fair even though the encoder carries history; a frame-only encoder is a later ablation, not a fork |
 | S21 | `k_max ≥ 8`, declared in `Config` alongside `K = 4` | `round(0.9·k_max)` hits the untrained top row exactly at `k_max = 4`, and S10's clamp then drops τ_ctx to 0.75. Both failures vanish at `k_max ≥ 8` (τ_ctx = 0.875). k_max sets the training noise grid; K is the generation rung count — they are independent and neither was registered |
 | S22 | The reward and continuation caused by `a_t` are read at lead 0 of `h_{t+1}`, never `h_t` | S3 defines reward lead 0 as the reward *arriving*. `a_t` is chosen at `h_t`; its consequence arrives with `o_{t+1}`. Reading lead 0 at `h_t` returns the previous action's reward and shifts every return by one step — the predecessor's `reward_logits[:, 0, 0]` is correct only under this reading. Realised in `imagination.imagine`, which reads both from the readout `advance` returns; **no gate asserts it** -- doing so needs the gate to run a rollout, which it does not |
-| S23 | `Z*` is defined at MAE probability 0 | Masking is a Phase-1A training mechanism. The predecessor trained with masking silently disabled while advertising 0.9; the mirror failure is emitting cached targets under a random mask, which makes the same frame yield different `Z*` |
+| S23 | `Z*` is defined with representation corruption off | MAE replacement probability, EMA context masking, and LeVJEPA token dropping are Phase-1A mechanisms only. Cached targets and deployment use the declared dense export |
 | ~~S24~~ | **Superseded by S34.** With no candidate pass there is nothing for a `{candidate, commit}` table to distinguish, so direct's conditioning slot carries a single reachable embedding | |
 | S25 | Action table has `n_actions + 1` rows, the extra being BOS. No query token exists (S34) | Reachable at every true episode start; the predecessor shipped 18 rows undocumented. The query-shape half is void under S34, which has no query |
 | S26 | Committed and observed blocks carry the finest step index `d_min` | The signal bin is fixed by S16; nothing fixed `d`. MMBench2 labels context blocks with `d_min`; training samples `d` per block, so a committed block needs a declared value rather than an inherited one |
@@ -50,7 +52,7 @@ not an implementation detail. If the plan is wrong, fix the plan.
 | S48 | `Batch.scored` is per block and per row; **S31's single burn-in integer is withdrawn** | A block is faithful once it holds a full receptive field, and unconditionally in a window starting at the episode start, where nothing earlier is missing. One integer masked the first `receptive_field - 1` blocks out of *every* row -- so the states deployment actually begins from were never supervised, while still costing full activation memory. Measured: 65% of encoder memory was spent on blocks producing no loss term; the scored fraction rises from 34.8% to 51.1%. A quarter of uniform rows are drawn at the episode start, because at a uniform start those windows arrive with probability 1/span (~0.5%) and the fix would be inert |
 | S49 | The archived replay is loaded, not regenerated, and `train_expert` is withdrawn in favour of `expert.load_archive` | There is no expert to retrain: the archive's manifest carries `params_sha256` and `replay_sha256`, and the corpus supplies both §4.1 sampling roles (S46), so nothing is "missing" in the mixture sense. Broader collection is a *support-coverage* decision -- terminal exposure (S50) and behavioural diversity -- not a requirement the paper imposes. Conversion is exact and lazy -- crop and permute are views, so 320 episodes cost 0.86 GiB RSS against an 8.6 GiB file, and the 696,746 transitions match the manifest. `events` is reconstructed from the per-frame cumulative achievements the archive already stores. The previous pipeline was right where this one had regressed: its `_dead` reads `in_lava | (player_health <= 0)` directly, exactly the fix applied to `env.step` this session |
 | S50 | The archive's 2500 cap is **ours, not the environment's**, and its cost is terminal scarcity rather than truncated windows | Craftax's native horizon is 10000 and no archived episode reaches it, so all 252 of 320 cap endings are our own truncation and only 68 episodes died. Against this architecture the cap is harmless for window sampling -- the mean episode is 2177 steps, 34x `sequence_long` and 45x `dynamics_context`, and only 3 episodes are too short for a long window. What it does cost is terminations: 68 terminal transitions in 696,746 is 0.0098%. The per-step figure must be computed under the *actual* sampler -- episode-uniform, then start-uniform -- not by multiplying the global frequency by the block count, which assumes block-uniform sampling and is optimistic. Measured over the real archive: **0.00209 terminal blocks per short batch (one every 479 steps)** and 0.00563 per long batch (one every 178). An earlier figure of "one every 160" used the block-uniform shortcut and is corrected here. Task events are not scarce by comparison (0.95%, 0.61 per step). Terminal exposure is therefore a collection problem for the uniform half, not an argument about the cap, and raising the cap would make it worse by lengthening the surviving episodes |
-| S51 | **Revised by S69 and S80. Active task:** one aggregate Craftax-Classic task; "any first achievement" is the relevance event | No task tokens exist in the active architecture, so the policy and value optimize the environment's aggregate reward. Mean unique-achievement count is therefore the objective-aligned executed metric under S80; the official geometric score remains mandatory because it measures breadth that the aggregate reward does not. A task-conditioned successor is deferred, not silently approximated |
+| S51 | **Revised by S69, S80 and S89. Active task:** one aggregate Craftax-Classic task; "any first achievement" is the relevance event | No task tokens exist in the active architecture, so the policy and value optimize aggregate reward. Mean unique-achievement count remains its causal metric; S89 specifies, but does not activate, the task-conditioned successor |
 | S52 | **Evaluation protocol; metric gate revised by S80** | Native **10000**-step horizon, categorical sampling at temperature 1, paired seeds and retained raw rows remain unchanged. Controls are the actor's own frozen BC prior and random. Mean achievement count, official geometric score, raw return, per-achievement rates, termination and length are all reported. Count, reward and geometric gaps each receive their own paired percentile interval; no metric substitutes for another. Under the active aggregate task, an arm passes the causal actor gate only when the lower bound of its mean-count advantage over both controls exceeds zero. DEV and FINAL remain disjoint and FINAL is opened once |
 | S53 | **Parameter matching**: at most **0.5%** deployed-parameter residual, shared dimensions held fixed | `d_state` is the single matching knob (S28). The measured residual at `d_state = 64` is -0.316%, which passes, so 64 is settled by a declared rule rather than by being the value that happened to be there. Tolerance and rule are fixed before any result is read; a later arm that misses it must move `d_state`, not the tolerance |
 | S54 | **Imagination horizon is not settled at 8.** `horizon` is a smoke default; the final value is selected on DEV from `horizon_candidates` | Blessing a default because it ran is how an arbitrary constant becomes a result. Selection uses `diagnostics.multistep_error` under a *full* committed context, which is why that diagnostic was corrected from its one-block start -- choosing a horizon from a model with almost no history selects for the wrong regime. Selection happens on DEV, never against executed-control FINAL numbers |
@@ -85,15 +87,20 @@ not an implementation detail. If the plan is wrong, fix the plan.
 | S83 | **Generated-latent terminal shaping is the final preregistered objective test, not a claimed Dreamer 4 component** | Dreamer 4 jointly continues its video objective while reward gradients enter the shared agent-token transformer, but publishes neither a deterministic Direct predictor nor a continuation estimator. Dreamer 3, DRAMA, NE-Dreamer and Dreamer-CDP jointly let reward/continuation likelihoods shape their world features; V-JEPA 2-AC and DINO-WM instead fit frozen targets with latent prediction alone. Attaching a continuation likelihood directly to Direct's predicted packed latent is therefore a source-motivated test at an unsourced boundary, not paper fidelity. Two Direct-Attention cells retain S78's full 7,501-terminal schedule, ordinary/terminal MSE mixture, initialization, batches, optimizer, streams and 5k/10k/20k endpoints. A shared small latent head sees the same final alive/dead labels on the matching observed and recursively generated successors. The only intervention is whether the generated-latent path is attached or stopped; observed targets never update the frozen tokenizer. The stopped world's update must reproduce S78's full-diversity checkpoint bitwise at every milestone. Head AUC is a validity check, never the endpoint: the primary outcome is paired fatal-minus-safe movement of the generated latent along the fixed TRAIN direction on both unchanged logged DEV transitions and the 104 policy forks, with fresh frozen-probe AUC and MSE secondary. At 20k, a rescue requires the allowed-minus-stopped lower paired 95% bound to exceed 5% of the true contrast on both distributions; equivalence requires both intervals inside the corresponding two-sided bands. The earlier agent-readout consequence gradient, which worsened Direct, and MMBench2's reported reward-gradient null remain adverse controls. A negative result closes this particular terminal-shaping mechanism, not every possible world model. |
 | S84 | **The exported representation uses 64 latent slots** | The 32-slot export scored 0.591 against 0.674 before its bottleneck; 64 slots closed that loss at both tokenizer seeds. Under matched Direct training, 64 versus 32 improved paired action-effect NSE by -0.521 and -0.463 and crossed below the no-action-effect null at both seeds. This changes `Z*`, so old latent caches and checkpoints are intentionally incompatible. |
 | S85 | **Direct uses one candidate-action token interaction block after pooling** | Against the old broadcast-action MLP, the one-block mixer improved `R_delta` by +0.053 and +0.066, NSE by -0.332 and -0.416, and cosine by +0.071 and +0.104 across two world seeds; all paired intervals excluded zero. The gain arose through joint training reshaping upstream world features, not proof that a specific internal probe drop was causal. The final `tanh` remains: removing it worsened geometric fidelity at both seeds and left the encoder codomain. |
+| S86 | **Stage B has three named representation families:** `mae`, `ema_jepa`, `levjepa` | EMA-JEPA-R is V-JEPA-style masked prediction with an explicit predictor and stopped EMA targets. LeVJEPA-R is one shared encoder with global/local views and SIGReg; SIGReg is not an architecture name. Both are causal-D4 adaptations and keep JEPA-R separate from Direct JEPA-D |
+| S87 | **LeVJEPA-R uses its published loss interface** | One global and multiple local spatial/photometric views share one temporal interval. Their final clip readouts use global/local MSE with gradients through both sides plus per-view, full-global-batch SIGReg at `lambda=0.02`. The projector is training-only; no objective target, predictor, or stop-gradient exists |
+| S88 | **LeVJEPA-R preserves fixed recurrent slots before optimizing compaction** | The published uniform random spatiotemporal keep-set is represented by true-position attention exclusion: excluded slots cannot be read and their outputs are discarded. This preserves the causal tokenizer's slot identity but not LeVJEPA's compute saving. Physical compaction is eligible only after dense-vs-compact output, gradient, and recurrent-state parity |
+| S89 | **The final control successor is D4-style achievement conditioning, not reward reweighting** | The active aggregate agent stays as control. An eligible TRAIN-supported subset of recorded achievements supplies one-hot `q` and sparse binary task rewards; only one-way agent tokens, policy, reward, and value receive `q`. The world remains task-independent, and the task set plus evaluation prompt freeze before results. D4 supplies this interface; the Craftax task vocabulary and prompt are local choices |
+| S90 | **Each representation declares one dense export and one decoder boundary** | MAE exports its trained encoder and retains its jointly trained reconstruction decoder. EMA-JEPA-R exports the EMA target used by the pinned frozen evaluations; LeVJEPA-R exports its evaluation-only Polyak encoder. JEPA decoders fit only after freeze. Every export is `64x16`, uncorrupted and projector/readout-free downstream; policy or human play uses recursive `Advance`, never decoded pixels as state |
 | S84 | **S83's original evaluator tested transfer across rollout paths, not the path it trained** | The 20k run and its causal controls are valid: identical initialization, batches and streams; nonzero gradient only in the attached cell; and the stopped world reproduces S78 bitwise at 5k, 10k and 20k. But a post-run function-level audit found a material endpoint mismatch. `terminal_objective` labels death only on the *second recursive* successor, after the penultimate state has itself been generated; both archive `reset16` and the fixed policy forks instead score one step from an *observed* predecessor. Their null is a valid transfer result, not a test of whether the supervised recursive path improved. The exact held-out archive path check changes the picture: at 20k, stopped recursion recovers **31.5%** of the true fatal-safe movement (0.142 [0.124, 0.159]) and attached recursion recovers **44.5%** (0.200 [0.183, 0.216]), while attached one-step remains at 3.46%. Before inspecting the still-unseen recursive fork result, its correction is fixed: reconstruct the preceding frozen-policy state, generate the fork state with the actually executed incoming action, then apply each of the same 17 fork actions; compare attached minus stopped at 20k with the existing paired whole-state bootstrap and 5%-of-true threshold. This is a post-hoc alignment correction, not a new training result or a production change. It will decide whether the recursive archive gain transfers to policy states; it cannot establish Dreamer 4 fidelity or repair reward prediction by itself. |
 | S46 | The archived Craftax replay is **losslessly convertible and usable for both §4.1 sampling roles**; what it lacks is behavioural breadth, not a "uniform half" | Everything below verified by reading the artifact, not from its manifest alone. `artifacts/expert/craftax_expert_v1.pt` (8.6 GB) holds 320 episodes / 696,746 transitions at `mean_achievements` 20.62 of 22, with all 320 flagged deep-achievement. Conversion is exact: `obs` is `(2501, 3, 64, 64)` uint8 channels-first, zero-padded from 63x63 (row 63 and col 63 measured all-zero), so `[:, :, :63, :63]` then permute to HWC loses nothing. It stores only `continues`, so `terminated = continues == 0` and `truncated` is the 2500 cap. **Correction, 2026-08-01**: the claim that this makes the corpus "100% relevant and 0% uniform" was wrong and is withdrawn. S43 defines `relevant` as a *sampling role*, not a property of an episode, and §4.1's language is sequence-level: a 2500-step successful episode contains many ordinary windows holding no achievement event, so this corpus supplies both roles. The generator also never acceptance-filtered by achievement -- it records every completed rollout and counts achievements afterwards -- so it is already unfiltered *within one PPO policy's behaviour distribution*. The fallback that sentence described no longer exists in the code either. What remains true is narrower and is the actual limitation: one strong policy over 320 episodes is far less diverse than 2541 hours of contractor play, its failure support is tiny (S50), and its expert lacks vendored source lineage. Two further defects compound it: only 68 of 320 episodes terminate (252 hit the cap), so the continuation head sees almost no real terminations, and its expert has no byte-level provenance (`Craftax_Baselines@7ce36fa` is not pinned in `third_party/`). Per S29 it therefore stays a smoke-test corpus. What is missing is not more expert play -- 697k expert transitions is already ample for the relevant half -- but an equal mass of unfiltered rollouts, which also supplies the terminations |
 | S27 | Bounded encoder context `W`, part of `C*` — `z_t = Z*(x_{t−W+1..t})` everywhere | Phase 1A windows carry a `W−1` burn-in that is encoded but not scored; once frozen, each episode is scanned once and cached **under the same `W` limit** — an unbounded full-episode scan would produce a different `Z*` from deployment. `W` is not a capacity number: it defines the representation, so changing it changes every `z_t` and it must be frozen before the final encoder trains |
 | S28 | Match total **deployed** parameters within a declared tolerance while holding `d_model`, depth, token layout and shared interfaces fixed | Primary knob is Mamba's `d_state`, the only one that moves M-arm parameters without touching the shared backbone. Parameter counts move discretely, so `d_state` alone may not reach tolerance at a sane state size — any additional knob must be declared before training. Report the unmatched residual, FLOPs, memory, recurrent-state size and measured throughput regardless. The predecessor called arms matched in a comment while the temporal module differed by 29.6% |
 | S29 | Archived replay is for debugging and smoke tests only; regenerated replay backs every reported number | Its expert has no byte-level provenance and its terminal-window support is 58 windows. Keeping both uses named stops the old set from quietly becoming the final dataset, and keeps `expert.py` exercised |
-| S30 | The frozen latent cache lives on `Episode` as `latents` + `latent_digest`; `train_representation` writes it at the Phase-1A boundary and `load_episodes` verifies it | The digest covers exactly `C*`: encoder checkpoint, exported copy, `W`, bottleneck and packing, `p_mae = 0`, patch size. Without it a cache built under a different encoder or `W` is silently reusable, which is the one place a wrong number contaminates every downstream result at once |
+| S30 | The frozen latent cache lives on `Episode` as `latents` + `latent_digest`; `train_representation` writes it at the Phase-1A boundary and `load_episodes` verifies it | The digest covers exactly `C*`: representation family, encoder checkpoint, exported copy, `W`, bottleneck and packing, all training corruption off, and patch size. Without it a cache built under another export is silently reusable |
 | S31 | `Batch` names its regions explicitly: `burn_in` (int prefix), `valid` (per-position target validity). The MAE mask is **not** a loader output — the encoder generates it | "masks" was ambiguous across five different things. Burn-in is always a prefix, so an integer beats a mask. Burn-in frames update encoder memory and score no loss; scored frames follow immediately under that memory. `patches` and `latents` are phase-determined: Phase 1A carries pixels, Phase 1B onward carries cached latents |
-| S32 | `Encoder.forward(patches, memory, p_mask, rng) -> (z, memory, patch_mask)` | One signature serves all four uses: Phase-1A window training, frozen episode scanning, recurrent execution, and diagnostics. The caller supplies and receives the bounded-`W` memory, so batched scanning and frame-by-frame execution are identical by construction; `p_mask = 0` on every `Z*` path per S23; burn-in is the caller slicing `z[:, burn_in:]`, which keeps it out of the encoder |
-| S33 | `scan_step_parity` also covers the encoder; `alignment` also asserts the `W` horizon and `p_mae = 0` | Batched `W`-context scan ≡ frame-by-frame recurrence ≡ the cached `Z*`; frames older than `W` cannot change `z_t`; burn-in + scored window ≡ episode caching; reset clears encoder memory. Folded into existing gates — no new function |
+| S32 | `Encoder.forward(patches, memory, corruption, rng) -> (z, readout, memory, excluded)` | `corruption` selects MAE replacement, EMA masking, LeVJEPA exclusion, or none. `readout` exists only where the representation objective needs it; `z` is always the dense candidate export. Every `Z*` call uses `none` per S23 |
+| S33 | `scan_step_parity` covers the encoder; `representation_export` asserts `C*` | Batched `W`-context scan ≡ recurrence ≡ cached `Z*`; frames older than `W` cannot change `z_t`; reset clears encoder memory. Export also checks family, copy, dense shape, and corruption-off identity |
 | S15 | Windows never cross an episode boundary; `evaluate` takes no reset mask | Keeps a reset a fresh construction. Asserted by `gates.alignment`; relaxing it changes the signature |
 
 ## Design decisions taken on evidence
@@ -221,11 +228,12 @@ config value, and each must be closed before the phase named.
 
 | Question | Close before | Constrains |
 |---|---|---|
-| **SIGReg on a projector vs on `z`** — projector keeps `Z*` and gives clean attribution; on `z` forks `Z*` from the anchor and tests the stronger claim | Stage B | `representation.Projector`, `representation.representation_loss` |
-| **EMA views / masks / loss; faithful LeJEPA vs anti-collapse ablation** — is the EMA arm learning spatial invariance, temporal predictability, or both? | Stage B | `data.views`, `representation.representation_loss`, `representation.update_target` |
+| **EMA-JEPA-R adaptation** — exact context/target masks, predictor size, loss norm, and momentum schedule; all must stay causal and preserve the dense export | EMA Stage B | `data.representation_views`, `representation.RepresentationPredictor`, `representation.representation_loss`, `representation.update_target` |
+| **LeVJEPA-R Craftax adaptation** — local-view count/crops, safe photometric transforms, token-drop rate, and the SIGReg sample count. The paper's 0.95 drop and large global batch are source defaults, not Craftax optima; gradient accumulation counts only if the loss sees the joint embeddings | LeVJEPA Stage B | `Config`, `data.representation_views`, `representation.representation_loss` |
+| **Task set, prompt, and switch state** — eligible achievements need TRAIN support, sparse rewards, a fixed prompt, a task-neutral continuation readout, and a declared carry/reset rule for agent-only memory. World streams never reset on a prompt change | Task stage | `agent.TaskSpec`, `agent.task_targets`, `agent.select_task`, `agent.Heads`, `state.WorldState` |
 | ~~**Generated-prefix contract**~~ — **closed by S55.** Settled: one-step teacher forcing plus a two-step autoregressive rollout through the real `advance` path, the two rollout terms averaged, squared error, and incoming recurrent memory detached in both arms | ~~Before Stage-A direct training~~ | `transition._direct_loss` |
 | **Go/no-go threshold *numbers*** — formulas exist now; scales come from the anchor or a pilot; numbers freeze **before any experimental cell is inspected**. Choosing them after all four cells train is not preregistration, whatever the intent | After the anchor, before inspecting Direct/Mamba cells | `Config` |
-| ~~**Capacity**~~ — **closed by S44**. The probe was run on the real worst case (Phase 1A: encoder + decoder + LPIPS + gradients + optimizer state, both sequence lengths). It did not move a single architecture field; it changed `batch` and turned on checkpointing. The remaining untested worst case is the EMA copy, which Stage B introduces | ~~Phase 1A~~ | `Config` |
+| ~~**Capacity**~~ — **closed for MAE by S44**. EMA adds a target and predictor; LeVJEPA adds multi-view activations and global-batch SIGReg. Each gets a fresh worst-case probe before Stage B | Each Stage-B arm | `Config` |
 | ~~**Imagination horizon**~~ — **closed by S54.** The selection *rule* is now fixed: DEV only, from `horizon_candidates`, via `multistep_error` under a full committed context. The resulting number is not yet chosen, and choosing it is a run, not a decision | ~~Phase 3~~ | `Config.horizon` |
 | ~~**Matching tolerance and final Mamba dimensions**~~ — **closed by S53.** 0.5% deployed residual, shared dimensions fixed; `d_state = 64` measured at -0.316% and passes | ~~Before building the Stage-A models~~ | `diagnostics.cost`, `Config` |
 | ~~**Executed-control metric definition**~~ — **revised by S80** after the oracle positive control exposed objective/evaluation disagreement. Aggregate-task mean achievement count is the causal gate; official geometric score is mandatory beside it. Both use paired intervals against BC and random, with native horizon and raw rows retained | ~~Before Stage A~~ | `execution.run_episode`, `evaluate`, `score` |
@@ -239,8 +247,9 @@ everything else is a function. Every entry maps to a box in `ARCHITECTURE.md`.
 ### Contracts
 
 **`config.py`** — `Config` (Type, frozen). Every constant, plus
-`transition ∈ {flow, direct}` and `time_mixer ∈ {attention, mamba}`. The four
-Stage-A arms are four `Config` values; there is no arm factory.
+`representation ∈ {mae, ema_jepa, levjepa}`, `transition ∈ {flow, direct}`,
+`time_mixer ∈ {attention, mamba}`, and `task_mode ∈ {aggregate, achievement}`.
+Experimental arms are `Config` values; there is no arm factory.
 
 **`sources.py`** — `source_digests(config)`, `verify_sources(recorded, config)`.
 
@@ -258,9 +267,11 @@ and `truncated` as separate raw fields; continuation is derived in `agent.py`.
 **`data.py`** — `Episode` (Type, unshifted storage: `observations`,
 `actions_taken`, `rewards`, `terminated`, `truncated`, `events`, eligibility,
 epsilon and declared split), `EpisodeCorpus` (Type, mmap-backed indexed sequence),
-`Batch` (Type, block arrays plus sampling/support roles),
+`Batch` (Type, block arrays, task id, plus sampling/support roles),
+`RepresentationViews` (Type: source indices, true token positions, global/local views),
 `patchify(frames, patch)`, `unpatchify(patches, config)`, `episode_splits(n, seed)`,
 `sample_batch(episodes, rng, config)`, `sample_terminal_batch(episodes, rng, config)`,
+`representation_views(batch, rng, config)`,
 `save_episodes(path, episodes)`, `save_episode_shard(path, episodes)`,
 `load_episode_store(path)`, `load_episodes(path)`.
 
@@ -272,12 +283,16 @@ cloning and dynamics select complementary halves and neither owns the rule.
 ### Representation — Box 2
 
 **`representation.py`** — `Encoder` (Type), `Decoder` (Type), `Projector` (Type),
+`RepresentationPredictor` (Type),
 `pack(z, n_spatial, k)`, `reconstruction_loss(pred, target, mask)`,
-`representation_loss(online, target, projector, views, config)`,
+`representation_loss(online, target, predictor, projector, views, config)`,
 `update_target(online, target, momentum)`.
 
-`Encoder.forward` is all of `C* ∘ E*`: patch projection, MAE replacement, latent
-tokens, backbone, bottleneck, `tanh`. `Decoder` is diagnostic-only after freeze.
+`Encoder.forward(patches, memory, corruption, rng) -> (z, readout, memory,
+excluded)` is all of `C* ∘ E*`. EMA requires `target` and `predictor`; LeVJEPA
+requires neither and reads its one-way final-time readout through `projector`.
+`update_target` is objective EMA in the former and checkpoint-only Polyak in the
+latter. `Decoder` is diagnostic-only after freeze.
 
 ### Backbone and time mixer — Box 3
 
@@ -298,14 +313,15 @@ in place. This module is the entire Mamba blast radius.
 ### Transition — Box 4
 
 **`transition.py`** — `World` (Type), `flow_conditioning(rng, shape, config)`,
-`observe(world, encoder, state, led_to_action, patches, rng, config)`,
-`advance(world, state, led_to_action, rng, config)`,
+`observe(world, encoder, state, led_to_action, patches, q, rng, config)`,
+`advance(world, state, led_to_action, q, rng, config)`,
 `transition_loss(world, batch, rng, config)`.
 
-`World.forward(state, led_to_action, latent, conditioning) -> (latent_out,
+`World.forward(state, led_to_action, latent, conditioning, q) -> (latent_out,
 agent_out, state_out)` is the generic `evaluate`. `advance` is *N* read-only
-candidate evaluations plus exactly one commit evaluation — flow N=4, direct N=1
-per S17 — and always reads `h` from the commit pass. `observe` is the one place a real frame becomes `(e_t, z_t, m_t, h_t)`. It takes
+candidate evaluations plus exactly one commit evaluation — flow N=4, direct N=0
+per S34 — and always reads `h` from the commit pass. `q=None` is the aggregate
+agent and every Phase-1B call. `observe` is the one place a real frame becomes `(e_t, z_t, m_t, h_t)`. It takes
 `rng` because the flow arm corrupts the committed latent at τ_ctx while the direct
 arm commits it clean; it exists because training,
 imagination context construction and execution would otherwise each inline
@@ -315,19 +331,23 @@ the rollout schedule, selected by `config.transition`.
 
 ### Agent — Box 5
 
-**`agent.py`** — `Heads` (Type: policy, reward, continuation, value),
+**`agent.py`** — `TaskSpec` (Type: eligible achievements and fixed prompt),
+`TaskEmbedder` (Type), `Heads` (Type: policy, reward, continuation, value),
+`task_targets(batch, config)`, `select_task(events, task_spec)`,
 `twohot(values, centers)`, `head_targets(batch, config)`,
 `head_loss(predictions, targets, config)`,
 `paired_terminal_loss(generated, observed, targets)`.
 
 `value` exists from construction but enters no optimizer before Phase 3.
 `head_targets` is where MTP lead alignment and the terminal/truncation split are
-realised.
+realised. Achievement mode replaces scalar reward targets with the selected
+event's sparse reward and supplies `q` only to agent-side paths. Continuation
+must read a task-neutral feature; that exact readout remains open.
 
 ### Imagination and improvement — Boxes 6, 7
 
 **`imagination.py`** — `Trajectory` (Type),
-`imagine(world, heads, state, agent, rng, policy_rng, config)`.
+`imagine(world, heads, state, agent, q, rng, policy_rng, config)`.
 
 The caller — `train_actor` — builds the starting state by repeated `observe`;
 `imagine` receives it complete and owns no encoder. Box 6's "encode and scan the
@@ -351,7 +371,7 @@ the recursion's initial condition `R_T = v_T`, not a mask. Hard `terminated` and
 ### Execution — Box 8
 
 **`execution.py`** — `Result` (Type: seed, steps, reward, terminated, truncated, achievements), `score(results)`, `evaluate(policies, seeds, config)`, `run_random(seed, config, limit)`,
-`run_episode(world, encoder, heads, seed, config)`.
+`run_episode(world, encoder, heads, seed, config, task_spec=None)`.
 
 **`counterfactual.py`** — `OutcomeForks` (Type),
 `collect_outcome_forks(world, encoder, prior, config)`,
@@ -374,11 +394,12 @@ groups are built, and the only place upstream `_no_weight_decay` is honoured.
 
 **`__main__.py`** — `main()`. **`__init__.py`** — exports only.
 
-### Validation — the Stage-A gate list
+### Validation
 
 **`gates.py`** — `alignment(config)`, `scan_step_parity(config)`,
 `reset_parity(config)`, `firewall(config)`, `branch_nonmutation(config)`,
-`recurrent_carry(config)`.
+`recurrent_carry(config)`, `representation_export(config)`,
+`representation_retention(config)`.
 
 `scan_step_parity` covers four things: scan versus recurrent step, teacher-forced
 forward versus the equivalent reconstructed `evaluate`, encoder scan versus
@@ -409,7 +430,9 @@ whole module set rather than the world alone.
 
 ## Totals
 
-21 types, 66 public functions and 51 private helpers, across 20 modules.
+Planned after the Stage-B/task additions above: 25 types and 71 public functions
+across the same 20 modules. The current implementation remains at 21/66 plus 51
+private helpers until those stages begin.
 
 The private count has grown from the planned 18. That is drift the contract exists
 to catch, and it is recorded rather than rounded away: the growth is real, most of
@@ -432,8 +455,9 @@ plan would otherwise have shipped.
 | `actor_loss(trajectory, returns, prior_logits, config)` | It needs the logits, actions and values together and they already travel as one `Trajectory`; passing them apart invites a mismatched slice |
 | `World.forward` returns memory, not a `WorldState` | `WorldState.latent` is defined as the *accepted* latent, which only a commit site can supply; a candidate has no accepted latent to put there |
 
-`representation_loss` raises `NotImplementedError` naming its open decision rather
-than guessing a default. `expert.train_expert` did too; S49 withdrew it.
+`representation_loss` raises `NotImplementedError` naming the remaining Stage-B
+choices rather than guessing defaults. `expert.train_expert` did too; S49
+withdrew it.
 
 ## S37 — `window` bounds state, not receptive field
 
@@ -560,7 +584,7 @@ all needed it, and inlining it three times is how the uncommitted-start defect
 appeared in the first place. `data.unpatchify` is required by the perceptual
 term. Both are in the inventory.
 
-Still deferred: `representation_loss` (Stage B), which raises rather than guessing.
+Still deferred: the Stage-B representation bodies, which raise rather than guess.
 `expert.train_expert` is withdrawn -- see S49; there is no expert to retrain.
 
 **Sweep of 2026-08-01.** Four more, each reproduced before being fixed:

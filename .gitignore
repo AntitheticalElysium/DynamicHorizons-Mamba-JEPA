@@ -260,3 +260,15 @@ artifacts/eda/damage_labels.npz
 # Draft archive, content captured in git history
 d4mj_archive.zip
 artifacts/eda/broad_forks_v2/
+
+# 32 MB of per-transition rows; the summary lives in the commit message and the log
+artifacts/paired_ceiling/
+
+artifacts/rollout_ceiling/
+
+artifacts/multiworld_drift/
+artifacts/multiworld_entropy/
+
+# LeWM M0-M3 gate runs: 20 GB of checkpoints, replay shards, feature caches and
+# the 100 MB M03 reports. Extracted findings live in d4mj/docs/evidence/m03_20260910/.
+artifacts/lewm_gates_20260906/

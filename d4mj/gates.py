@@ -1,7 +1,11 @@
+from dataclasses import dataclass
+from collections.abc import Callable
+import hashlib
+
 import torch
 
 from .backbone import AGENT, Backbone, Layout, space_mask
-from .config import Config
+from .config import Config, canonical_json, recipe_digest
 from .data import Episode, sample_batch
 from .state import WorldState
 from .transition import advance, initial
@@ -345,8 +349,6 @@ def _isolated(world, config: Config):
     return committed, conditioning, action, memory
 
 
-
-
 def _world(config: Config):
     """Seeded, because a gate that draws fresh weights each run is a gate whose
     pass or fail is a coin flip -- one that reported both on consecutive runs of
@@ -379,3 +381,136 @@ def _recover_start(batch, row: int, config: Config) -> int:
     if bool(batch.valid[row][0]):
         return int(batch.reward[row][0]) + 1
     return 0
+
+
+class ComponentGateError(RuntimeError):
+    def __init__(self, component: str, reason: str):
+        self.component = component
+        super().__init__(f"{component}: {reason}")
+
+
+def contract_digest(contract: dict) -> str:
+    return hashlib.sha256(canonical_json(contract).encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class Gate:
+    name: str
+    check: Callable
+    requires: tuple[str, ...] = ()
+
+
+LEGACY_CHECKS = ("alignment", "scan_step_parity", "reset_parity", "firewall", "branch_nonmutation", "recurrent_carry")
+
+
+def preflight(config, episodes=None, dataset_contract: dict | None = None) -> dict:
+    """One gate runner for both families, with explicit prerequisite stops."""
+    from .lewm_config import LeWMConfig
+
+    if isinstance(config, LeWMConfig):
+        from .lewm_diagnostics import joint_checks
+        if episodes is None or dataset_contract is None:
+            raise ComponentGateError("dataset", "joint preflight requires an audited raw corpus")
+        report = {"schema": "d4mj_lewm_gates_v1", "recipe_id": recipe_digest(config),
+                  "dataset_id": contract_digest(dataset_contract), "components": {},
+                  "architecture_verdict": "not_evaluated",
+                  "m4": {"status": "blocked", "reason": "M4/H16/actor/renderer require subsequent component gates"}}
+        checks = joint_checks(config, episodes, report)
+    else:
+        report = {"schema": "d4mj_stage_a_gates_v1", "recipe_id": recipe_digest(config),
+                  "family": f"{config.transition}-{config.time_mixer}", "components": {},
+                  "architecture_verdict": "not_evaluated"}
+        checks = [Gate(name, lambda name=name: globals()[name](config)) for name in LEGACY_CHECKS]
+    for gate in checks:
+        missing = [name for name in gate.requires if report["components"].get(name,{}).get("status") != "pass"]
+        if missing:
+            report["components"][gate.name] = {"status": "blocked", "reason": f"prerequisites did not pass: {missing}"}
+            continue
+        try:
+            report["components"][gate.name] = {"status": "pass", "detail": gate.check()}
+        except Exception as error:
+            report["components"][gate.name] = {"status": "fail", "reason": f"{type(error).__name__}: {error}"}
+    return report
+
+
+def require_joint_gates(report: dict, config, dataset_contract: dict):
+    from .sources import lewm_source_manifest
+    if report.get("schema") != "d4mj_lewm_gates_v1" or report.get("recipe_id") != recipe_digest(config):
+        raise ComponentGateError("gate_identity", "missing/stale recipe validation")
+    if report.get("dataset_id") != contract_digest(dataset_contract):
+        raise ComponentGateError("gate_identity", "dataset changed since preflight")
+    for name in ("source_identity", "dataset", "device", "objective_source", "model_construction", "recurrence", "normalization", "joint_resource"):
+        record = report.get("components", {}).get(name, {})
+        if record.get("status") != "pass":
+            raise ComponentGateError(name, record.get("reason", "gate has not run"))
+    try:
+        sources = lewm_source_manifest()
+    except Exception as error:
+        raise ComponentGateError("source_identity", str(error)) from error
+    if report.get("sources") != sources:
+        raise ComponentGateError("gate_identity", "source/dependency code changed since preflight")
+    if config.runtime.device == "cuda":
+        if not torch.cuda.is_available():
+            raise ComponentGateError("device", "CUDA unavailable in the launch process")
+        if report["components"]["joint_resource"]["detail"]["device_name"] != torch.cuda.get_device_name():
+            raise ComponentGateError("device", "target GPU changed; run preflight on this device")
+    if config.runtime.purpose == "research" and not report["components"]["joint_resource"]["detail"]["gpu_validated"]:
+        raise ComponentGateError("joint_resource", "research launch requires target-GPU validation")
+
+
+def require_joint_screen(report, config, dataset_contract, resume):
+    """Only this exact accepted pair may continue its original joint schedule."""
+    from .checkpoint import read_lewm_bundle
+    from .data import _sha256
+    from .sources import lewm_source_manifest
+    from .config import config_from_dict
+    from pathlib import Path
+    import json
+    if not isinstance(report,dict) or report.get("schema") != "d4mj_joint_screen_report_v1":
+        raise ComponentGateError("joint_screen", "a sealed passing G1 report is required")
+    if report.get("report_id") != contract_digest({k:v for k,v in report.items() if k != "report_id"}):
+        raise ComponentGateError("joint_screen_identity", "screen report bytes changed")
+    if (report.get("decision") != "continue_joint_budget" or report.get("m4_authorized") is not False
+            or report.get("dataset_id") != contract_digest(dataset_contract)
+            or report.get("sources") != lewm_source_manifest()
+            or any(v.get("status") != "pass" for v in report.get("components",{}).values())):
+        raise ComponentGateError("joint_screen", "screen did not authorize this source/data contract")
+    required = {"pair_identity","objective_contrast","raw_normalization","raw_recurrence","tc_normalization","tc_recurrence"}
+    if not required.issubset(report.get("components",{})):
+        raise ComponentGateError("joint_screen", "screen components are incomplete")
+    if report.get("settings_id") != recipe_digest(config_from_dict(report["settings"])):
+        raise ComponentGateError("joint_screen_identity", "screen settings changed")
+    pair_file = report.get("pair_manifest",{})
+    path = Path(pair_file.get("path",""))
+    if not path.is_file() or _sha256(path) != pair_file.get("sha256"):
+        raise ComponentGateError("joint_screen_identity", "pre-training seal is missing or changed")
+    pair = json.loads(path.read_text())
+    if pair["screen_settings_id"] != report["settings_id"] or pair["dataset_id"] != report["dataset_id"]:
+        raise ComponentGateError("joint_screen_identity", "screen differs from pre-training seal")
+    for filename,digest in report.get("artifacts",{}).items():
+        artifact = Path(report["artifact_root"])/filename
+        if not artifact.is_file() or _sha256(artifact) != digest:
+            raise ComponentGateError("joint_screen_identity", "screen evidence bytes changed")
+    if not all(a.get("learning_progress") and not a.get("retention",{}).get("projection_stop",True)
+               for a in report.get("arms",{}).values()) or set(report.get("arms",{})) != {"raw","tc"}:
+        raise ComponentGateError("joint_screen", "paired progression criteria are incomplete")
+    for variant, item in report["arms"].items():
+        now = item["prediction"]["normalized_prediction_mse"]
+        initial = item["initial_prediction"]["normalized_prediction_mse"]
+        if (not 0 <= now < initial or not bool(torch.isfinite(torch.tensor([now,initial])).all())
+                or item["recipe_id"] != pair["recipes"][variant]):
+            raise ComponentGateError("joint_screen", "reported learning progress is inconsistent")
+    arm = report.get("arms",{}).get(config.variant,{})
+    if arm.get("recipe_id") != recipe_digest(config) or resume is None:
+        raise ComponentGateError("joint_screen_parent", "resume the screened recipe and checkpoint")
+    parent = read_lewm_bundle(resume)
+    if parent["dataset"] != dataset_contract or parent["recipe_id"] != recipe_digest(config):
+        raise ComponentGateError("joint_screen_parent", "resume parent differs from screened run")
+    if parent["step"] == config.joint.screen_step:
+        if _sha256(resume) != arm.get("checkpoint_sha256"):
+            raise ComponentGateError("joint_screen_parent", "resume parent was not screened")
+    elif parent["step"] > config.joint.screen_step:
+        if parent["gates"].get("joint_screen",{}).get("report_id") != report["report_id"]:
+            raise ComponentGateError("joint_screen_parent", "later checkpoint lacks the accepted screen lineage")
+    else:
+        raise ComponentGateError("joint_screen_parent", "resume checkpoint precedes G1")

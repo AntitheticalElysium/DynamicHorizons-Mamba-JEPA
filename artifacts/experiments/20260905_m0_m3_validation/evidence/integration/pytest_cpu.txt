@@ -1,0 +1,22 @@
+........................................................................ [ 34%]
+.......................................ss............................s.. [ 69%]
+.............s.s.s.s..........................................           [100%]
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:1112
+  /home/antithetical/EPITA/PERSO/DynamicHorizons-Mamba-JEPA/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:1112: UserWarning: Can't initialize NVML
+    raw_cnt = _raw_device_count_nvml()
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+d4mj/tests/test_agent.py::test_position_mask_recombines_to_the_unmasked_loss
+  /home/antithetical/EPITA/PERSO/DynamicHorizons-Mamba-JEPA/d4mj/tests/test_agent.py:234: UserWarning: Converting a tensor with requires_grad=True to a scalar may lead to unexpected behavior.
+  Consider using tensor.detach() first. (Triggered internally at /__w/pytorch/pytorch/torch/csrc/autograd/generated/python_variable_methods.cpp:822.)
+    rebuilt[name] += float(part[name]) * share / totals[name]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+199 passed, 7 skipped, 4 warnings in 123.83s (0:02:03)
+sys:1: DeprecationWarning: builtin type swigvarlink has no __module__ attribute

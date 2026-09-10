@@ -1,5 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from typing import Literal
+import hashlib
+import json
+from pathlib import Path
 
 Transition = Literal["flow", "direct"]
 TimeMixer = Literal["attention", "mamba"]
@@ -77,8 +80,20 @@ class Config:
     horizon_candidates: tuple[int, ...] = (4, 8, 16, 32)
     # How many genuinely generated states `_direct_loss` trains. Deployment must not
     # imagine past it, or both transition and head inputs leave their trained
-    # distribution -- S68 caps the direct arm's horizon here.
+    # distribution -- S68 caps the direct arm's horizon here. Raising it is what a
+    # longer actor horizon costs: the rollout eats the last `direct_rollout` blocks of
+    # every row, so `sequence` bounds it and must be raised alongside.
     direct_rollout: int = 2
+
+    # Dreamer 3 keeps its predicted prior and its observation-derived posterior aligned
+    # with two stop-gradient KLs (`rssm.loss`: dyn = kl(sg(post)||prior), rep =
+    # kl(post||sg(prior))). Direct has no equivalent -- it inherits only V-JEPA 2-AC's
+    # recursive MSE -- and the measured failure is that generated states stay
+    # geometrically close to real ones while their readouts stop meaning the same thing
+    # to the agent. This weights a stop-gradient pull of the generated readout onto the
+    # observed one at the already-matched rollout positions. An additive coefficient
+    # on that term, not a share of a fixed budget. Zero until an arm asks.
+    align_weight: float = 0.0
 
     # Evaluation (S52). The native Craftax horizon, not the collector's 2500 cap.
     horizon_eval: int = 10000
@@ -143,6 +158,11 @@ class Config:
         assert self.k_max >= 8 and self.k_max & (self.k_max - 1) == 0
         assert self.rungs <= self.k_max
         assert self.tau_ctx_index < self.k_max
+        # The rollout needs one block to start from and one per generated state. Short
+        # batches are the binding schedule, so this is checked against `sequence`, not
+        # `sequence_long` -- otherwise three rows in four would train teacher forcing
+        # alone and the configured depth would be silently fictional.
+        assert self.direct_rollout < self.sequence
         assert self.dynamics_context == 3 * self.sequence
         assert self.sequence_long == 4 * self.sequence
         assert self.sequence_long > self.dynamics_context
@@ -215,3 +235,39 @@ class Config:
     def step_index(self) -> int:
         """Committed and observed blocks carry the finest step size d_min."""
         return self.n_step_bins - 1
+
+
+def canonical_json(value) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def recipe_dict(config) -> dict:
+    return json.loads(canonical_json(asdict(config)))
+
+
+def recipe_digest(config) -> str:
+    return hashlib.sha256(canonical_json(recipe_dict(config)).encode()).hexdigest()
+
+
+def config_from_dict(values: dict):
+    """Explicit family dispatch; incompatible flat/nested settings never mingle."""
+    if not isinstance(values, dict):
+        raise ValueError("recipe must be an object")
+    if values.get("schema") == "d4mj_joint_screen_v1":
+        from .lewm_config import ScreenConfig, _settings
+        return _settings(ScreenConfig, values)
+    if values.get("family") == "lewm_mamba":
+        from .lewm_config import config_from_dict as parse_joint
+        return parse_joint(values)
+    unknown = set(values) - {field.name for field in fields(Config)}
+    if unknown:
+        raise ValueError(f"unknown Config fields: {sorted(unknown)}")
+    values = dict(values)
+    for field in fields(Config):
+        if field.name in values and isinstance(field.default, tuple):
+            values[field.name] = tuple(values[field.name])
+    return Config(**values)
+
+
+def load_recipe(path: str | Path):
+    return config_from_dict(json.loads(Path(path).read_text()))

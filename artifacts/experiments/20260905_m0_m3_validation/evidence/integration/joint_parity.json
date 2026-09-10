@@ -1,0 +1,9 @@
+{
+  "scope": "four CPU verification updates of unchanged small test recipe, original joint trainer/sampler versus shared trainer/sampler",
+  "original_trainer_sha256": "5b4198dff4ffdf7c31c00da9ef89fb6f2d24238b11eac7a844854846c94faf2b",
+  "original_data_sha256": "561b7b94a2cd5bbd0ecb01f21503ba5cf15aae5493aea181ec42637d5fb0b94f",
+  "weights_and_bn_bit_exact": true,
+  "metrics_and_sampled_windows_exact": true,
+  "method": "archived original functions; only moved imports redirected; original optimizer, sampler and update code retained",
+  "architecture_claim": false
+}

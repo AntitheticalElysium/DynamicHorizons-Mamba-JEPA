@@ -1,0 +1,30 @@
+{
+  "schema": "d4mj_m0_m3_completion_v1",
+  "recorded_utc": "2026-09-06T22:33:12.070272+00:00",
+  "research_runtime_commit": "ae896f5d4ce49d1713636794d6cece3673ab4dc7",
+  "completed_updates_per_arm": 10000,
+  "stage": "authorized_joint_budget_complete",
+  "next_stage": "M4",
+  "m4_authorized": false,
+  "g1": "passed_original_budget_only",
+  "original_final_recurrence": "failed_tf32_absolute_bound",
+  "ieee_final_recurrence": "passed_same_tolerances",
+  "fresh_ieee_g0": "all_components_pass_both_arms",
+  "critical_semantic_retention": "not_evaluated",
+  "tc_promotion": "not_supported_by_current_proxy_comparison",
+  "reports": {
+    "paired/completed_components/report.json": "d48d054dc7256fb41dc62c8cd9e64ef62b15286c4c0489b795dee245fef27d3b",
+    "paired/learned_recurrence.json": "26be8c0b76be60122e530bf2d4574b34cde9d5eeb78077877ef6fef4860ee7d2",
+    "paired/ieee_diagnostic.json": "e16d0c37d966f6e8dd27e5b3741983a3f83d9f0367e180f581ed19201977ae2a",
+    "ieee_preflight/summary.json": "b2f2d9b15cbed9097e925fc65fe812fc4799f59d80a235853f901684696638cc"
+  },
+  "original_launch_status": "historical_after_environment_refresh",
+  "observed_resume": {
+    "pid": 4195,
+    "arm": "tc",
+    "checkpoint_step": 8500,
+    "final_step": 10000,
+    "original_heartbeats_verified": 187,
+    "interruption_cause": "unknown"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "scope": "M0-M3 mechanics; no control or external benchmark claim",
+  "legacy": {
+    "family": "MAE64x16 Flow|Direct x Attention|Mamba",
+    "status": "separate_unchanged"
+  },
+  "new_comparison": "raw versus temporally centered SIGReg; paired initial weights and sampler seeds",
+  "external_dreamerv3": {
+    "status": "unresolved",
+    "claim_authorized": false,
+    "required": [
+      "same Craftax variant",
+      "metric",
+      "training access",
+      "compute",
+      "evaluation protocol"
+    ]
+  },
+  "collector_training_access": "unknown"
+}
