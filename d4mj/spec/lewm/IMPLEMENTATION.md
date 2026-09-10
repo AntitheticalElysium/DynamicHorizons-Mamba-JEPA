@@ -1,6 +1,6 @@
 # Implementation plan and code-change map
 
-Status: M0–M3 runtime is implemented. [Actual files, validation and remaining boundaries](TC_LEWM_M0_M3_STATUS.md) are authoritative for implementation status; this document retains the end-state M0–M8 map. M4–M8 and their associated tests/CLI commands remain future work. History baseline: `162efd1`.
+Status: M0–M3 runtime is implemented. [Actual files, validation and remaining boundaries](STATUS.md) are authoritative for implementation status; this document retains the end-state M0–M8 map. M4–M8 and their associated tests/CLI commands remain future work. History baseline: `162efd1`.
 
 ## 1. Implementation boundaries
 
@@ -22,11 +22,11 @@ The required outcome is a reproducible path from raw episodes to a jointly train
 | M7 — controlled evaluation | Replicate full raw/TC pair, actor versus own BC, legacy references; optionally implement verified D3 adapter | Per-training-seed metrics and uncertainty, complete access/compute accounting; claim-specific gates passed |
 | M8 — longer playable worlds, conditional | A separately sealed longer recursive curriculum and validation, only after M7 or a compelling display-specific result | Validated64/256-step play with no refresh; no implicit 10,000-step claim |
 
-M1 and the renderer's standalone shape implementation can be developed independently, but decoder training waits for a frozen export. M4 integration does not license Phase 3 performance training before M5's relevant gates. First screen one raw/TC seed; replicate only according to the [stop rules](TC_LEWM_EVALUATION.md).
+M1 and the renderer's standalone shape implementation can be developed independently, but decoder training waits for a frozen export. M4 integration does not license Phase 3 performance training before M5's relevant gates. First screen one raw/TC seed; replicate only according to the [stop rules](EVALUATION.md).
 
 ## 3. Runtime files and public functions
 
-This table describes the end state; the [integration decision](INTEGRATION_REFACTOR.md) consolidates infrastructure in the existing modules. M4 and later methods listed here remain deferred. The [implemented M0–M3 function map](TC_LEWM_M0_M3_STATUS.md#implemented-file-and-api-map) resolves renamed/split helpers and explicitly identifies deferred methods. It is the approved scope update for the current implementation.
+This table describes the end state; the [integration decision](INTEGRATION.md) consolidates infrastructure in the existing modules. M4 and later methods listed here remain deferred. The [implemented M0–M3 function map](STATUS.md#implemented-file-and-api-map) resolves renamed/split helpers and explicitly identifies deferred methods. It is the approved scope update for the current implementation.
 
 | Path | Types/functions and responsibilities |
 |---|---|
@@ -132,7 +132,7 @@ TC-30 supersedes the provisional uniform FP32/BF16 tolerances with measured back
 
 M0–M3 includes `d4mj/recipes/lewm_mamba_raw.json` and `d4mj/recipes/lewm_mamba_tc.json`. A sealed `evaluation_seeds.json` is still required before control evaluation; schema/validation lives in `lewm_config.py`. Store all resolved nested values, not an undocumented pile of CLI overrides. M0–M3 records `requirements-lewm-rtx3060.lock.txt` after source/environment preflight and optional `requirements-play.txt` for the viewer; keep the existing requirements and audited legacy lock usable. Update `third_party/SOURCES.lock` only for newly vendored source actually used, preserving existing pins/licenses. The TC v3 PDF is already local and recorded in `third_party/PAPERS.lock`; an unavailable canonical TC repository is not invented.
 
-End-state CLI below mixes implemented and future commands. Use the [M0–M3 commands](TC_LEWM_M0_M3_STATUS.md) for the implemented surface; `evaluate`, bridge, actor and renderer commands here are not available research stages:
+End-state CLI below mixes implemented and future commands. Use the [M0–M3 commands](STATUS.md) for the implemented surface; `evaluate`, bridge, actor and renderer commands here are not available research stages:
 
 ```text
 python -m d4mj preflight --recipe <recipe.json> --dataset <manifest.json>

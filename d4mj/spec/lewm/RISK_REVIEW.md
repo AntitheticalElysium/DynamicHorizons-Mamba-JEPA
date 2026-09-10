@@ -2,7 +2,7 @@
 
 Reviewed 2026-09-05. The full roadmap cannot be declared low risk or guaranteed to work. The user's subsequent instruction explicitly authorizes **M0–M3 of the actual architecture, including real recurrence and the final state API**, with aggressive gates before M4/H16/actor/renderer. This supersedes the earlier suggestion of a disposable joint-training prototype.
 
-M0–M3 are implemented; [the status record](TC_LEWM_M0_M3_STATUS.md) separates code, mechanical validation and untested scientific claims. A failed recurrence, normalization or data gate stops that component, not the architecture as a whole.
+M0–M3 are implemented; [the status record](STATUS.md) separates code, mechanical validation and untested scientific claims. A failed recurrence, normalization or data gate stops that component, not the architecture as a whole.
 
 ## 1. What is being counted
 
@@ -37,9 +37,9 @@ These groups interact. For example, a policy mistake might result from group7's 
 
 The source [TC project page](https://ryuuchou17.github.io/tclewm/) changes where SIGReg acts while retaining the base encoder, predictor and downstream comparison. Its evidence concerns raw LeWM's predictive/regularization tradeoff.
 
-Our existing [MAE trainer](../train.py) uses reconstruction/LPIPS. [The alternate representation objective](../representation.py) is still a stub. Therefore, raw SIGReg competition is **not a demonstrated cause of the failed MAE/Direct run**. The connection is a hypothesis: joint training may produce dynamics-compatible features, and centering may improve that new representation. It is not a diagnosed bug with a paper-proven remedy.
+Our existing [MAE trainer](../../train.py) uses reconstruction/LPIPS. [The alternate representation objective](../../representation.py) is still a stub. Therefore, raw SIGReg competition is **not a demonstrated cause of the failed MAE/Direct run**. The connection is a hypothesis: joint training may produce dynamics-compatible features, and centering may improve that new representation. It is not a diagnosed bug with a paper-proven remedy.
 
-The [TC v3 Appendix A.1](../../third_party/papers/2607.26924v3-tclewm.pdf) also keeps pooled patch tokens for the policy. The proposed192-D export is source-inspired as a prediction target; using it as the sole current visual information for our actor and renderer is a separate, unvalidated decision. Its numerical width being copied from a paper does not make that use safe.
+The [TC v3 Appendix A.1](../../../third_party/papers/2607.26924v3-tclewm.pdf) also keeps pooled patch tokens for the policy. The proposed192-D export is source-inspired as a prediction target; using it as the sole current visual information for our actor and renderer is a separate, unvalidated decision. Its numerical width being copied from a paper does not make that use safe.
 
 Several important unknowns are **not additional adaptations**:
 
@@ -54,7 +54,7 @@ Implement M0–M3 as the actual future world-model path: source-audited encoder/
 
 Mechanical gates include source objective values and gradients, framewise frozen-BN parity, source/reference/scan/step output and carry gradients, chunk-boundary and longer-than-training contexts, branch ownership, exact resume, data alignment and cache identity. The target-GPU resource check uses the declared B128/F4/J1024 recipe. Recurrence tests at T257 certify software semantics within a numerical budget; they confer no learned H16 or H257 capability.
 
-M4's recursive distribution shift, predictor BN mode transition and head weighting remain untested. Actor/critic integration and renderer/viewer remain unimplemented. Launches cannot pass those boundaries on M0–M3 evidence. Research training also pauses at its immutable G1 screening checkpoint; the [G1 evaluator](TC_LEWM_G1_PROTOCOL.md) now gates continuation, while critical semantic and control validation remain outstanding.
+M4's recursive distribution shift, predictor BN mode transition and head weighting remain untested. Actor/critic integration and renderer/viewer remain unimplemented. Launches cannot pass those boundaries on M0–M3 evidence. Research training also pauses at its immutable G1 screening checkpoint; the [G1 evaluator](G1_PROTOCOL.md) now gates continuation, while critical semantic and control validation remain outstanding.
 
 ## 5. What the gates can settle
 

@@ -3,9 +3,9 @@
 Run: `artifacts/lewm_gates_20260906/m03_bootstrap/evaluation_v2`, completed 2026-09-09.
 `complete.json` reports `suite_complete: true`; the baseline decision is
 `m03_capability: insufficient_coverage` and `m4_authorized: false`. Extracted numbers
-and their source hashes are in [evidence/m03_20260910/summary.json](evidence/m03_20260910/summary.json).
-Read with the [paired research record](TC_LEWM_PAIRED_RESULTS.md) and the
-[gate contract](../m03/README.md).
+and their source hashes are in [evidence/m03_20260910/summary.json](evidence/summary.json).
+Read with the [paired research record](../20260906_lewm_paired/README.md) and the
+[gate contract](../../../d4mj/m03/README.md).
 
 M4 remains blocked. Nothing below is a control result, a policy result, or an
 architecture attribution: Direct consumes 64 frames and LeWM four, so all cross-family
@@ -128,7 +128,7 @@ shared by both arms, independent of the centering argument. It is not control ev
 The encoder diagnosis is now specific: Raw has a real CLS→z projector bottleneck, and
 TC's loss begins **before** the projector, at CLS, with projection worsening it. What
 is not known is whether health, inventory, prerequisites and spatial state survive in
-the 81 ViT patch tokens that [`projected_and_cls`](../lewm.py) discards at extraction.
+the 81 ViT patch tokens that [`projected_and_cls`](../../../d4mj/lewm.py) discards at extraction.
 This matters because the pinned TC-LeWM paper's downstream policy consumes patch tokens
 alongside CLS, while our exported world state is projected CLS only; its robot-policy
 result therefore does not validate a CLS-only bottleneck.

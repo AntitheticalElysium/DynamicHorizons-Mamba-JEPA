@@ -31,7 +31,7 @@ recurrent state with linear sequence processing. D4MJ tests whether that state i
 a practical long-context memory for world models while preserving exact recurrent
 execution semantics.
 
-The independent [TC-LeWM–Mamba M0–M3 implementation](d4mj/docs/TC_LEWM_M0_M3_STATUS.md) now provides joint encoder/world training and persistent differentiable recurrence. It has separate recipes, checkpoints and component gates. Its scientific screening, recursive bridge, actor and renderer remain gated; no learned-control result is claimed.
+The independent [TC-LeWM–Mamba M0–M3 implementation](d4mj/spec/lewm/STATUS.md) now provides joint encoder/world training and persistent differentiable recurrence. It has separate recipes, checkpoints and component gates. Its scientific screening, recursive bridge, actor and renderer remain gated; no learned-control result is claimed.
 
 ## The architecture
 

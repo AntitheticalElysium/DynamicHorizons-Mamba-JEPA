@@ -1,6 +1,6 @@
 # Evaluation, experiment order, and stop rules
 
-Status: proposed protocol. Read the [architecture](TC_LEWM_ARCHITECTURE.md) and [hyperparameter ledger](TC_LEWM_DECISIONS.md). Thresholds below are explicit project tolerances, not numbers certified by a paper. Seal them with source, dataset and seed manifests before inspecting new results.
+Status: proposed protocol. Read the [architecture](ARCHITECTURE.md) and [hyperparameter ledger](DECISIONS.md). Thresholds below are explicit project tolerances, not numbers certified by a paper. Seal them with source, dataset and seed manifests before inspecting new results.
 
 ## 1. Questions and permitted claims
 

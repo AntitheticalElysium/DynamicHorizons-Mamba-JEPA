@@ -1,6 +1,6 @@
 # Paired joint research evidence
 
-Runtime `ae896f5d4ce49d1713636794d6cece3673ab4dc7`; shared integration `0d49d7e`. See the [interpretation and stop decision](../../TC_LEWM_PAIRED_RESULTS.md).
+Runtime `ae896f5d4ce49d1713636794d6cece3673ab4dc7`; shared integration `0d49d7e`. See the [interpretation and stop decision](../README.md).
 
 ## Committed records
 
@@ -29,6 +29,6 @@ The complete pair is `artifacts/lewm_gates_20260906/paired/`. Immutable weights,
 
 For a reproduction with the original checkpoints, start a fresh process with `TRITON_F32_DEFAULT` **unset**, `PYTHONPATH=.`, `OMP_NUM_THREADS=2`, `MKL_NUM_THREADS=2`, and use the pinned `.venv/bin/python`. Each driver takes `--pair artifacts/lewm_gates_20260906/paired --out <fresh-path>`. The completed audit uses an output directory; the two bounded diagnostics use a JSON file. A completed audit exit code1 is expected while the original recurrence contract remains failed. The IEEE driver explicitly records its intervention after validating the original execution identity.
 
-The preceding regression evidence remains [205 CPU tests passed](../g1_readiness/pytest_cpu.txt), [targeted CUDA tests](../integration/pytest_gpu.txt), and [exact legacy integration parity](../../INTEGRATION_REFACTOR.md). This final work changes documentation and analysis drivers, not the training runtime. No extra research budget, actor training, H16 bridge, renderer fit, FINAL evaluation or external score comparison was run.
+The preceding regression evidence remains [205 CPU tests passed](../../20260905_m0_m3_validation/evidence/g1_readiness/pytest_cpu.txt), [targeted CUDA tests](../../20260905_m0_m3_validation/evidence/integration/pytest_gpu.txt), and [exact legacy integration parity](../../../../d4mj/spec/lewm/INTEGRATION.md). This final work changes documentation and analysis drivers, not the training runtime. No extra research budget, actor training, H16 bridge, renderer fit, FINAL evaluation or external score comparison was run.
 
 Fresh IEEE preflights are reproduced with `TRITON_F32_DEFAULT=ieee OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 .venv/bin/python -m d4mj preflight --recipe d4mj/recipes/lewm_mamba_<raw-or-tc>.json --dataset artifacts/craftax_support_v2 --out <fresh-directory>`. The recorded pair used `record_joint_preflight` sequentially after loading the shared corpus once. Research recipes were unchanged; the source manifest explicitly records the new execution setting. Peak allocated/reserved memory is952,169,984 /1,193,279,488 bytes for both arms.

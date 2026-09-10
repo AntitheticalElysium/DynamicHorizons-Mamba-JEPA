@@ -1,6 +1,6 @@
 # M0–M3 evidence, 2026-09-05
 
-These are technical verification artifacts, not trained research results. Read [implementation status](../../TC_LEWM_M0_M3_STATUS.md) for scope and limitations.
+These are technical verification artifacts, not trained research results. Read [implementation status](../../../../../d4mj/spec/lewm/STATUS.md) for scope and limitations.
 
 - `summary.json`: final suite counts, both full-architecture GPU preflights and GPU resume result.
 - `raw/`, `tc/`: final resolved verification recipes, source closure, data audit and all component gates. These preserve actual B128/F4/J1024, native image geometry and six-layer Mamba settings. `purpose=verification` explicitly identifies the bounded real-data fixture.

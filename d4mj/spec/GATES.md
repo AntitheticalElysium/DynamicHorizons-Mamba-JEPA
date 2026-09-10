@@ -1,6 +1,6 @@
 # Gates
 
-The separate TC-LeWM–Mamba family uses [component-scoped M0–M3 gates](../docs/TC_LEWM_M0_M3_STATUS.md) in `lewm_diagnostics.py`: source/data/device, objective, construction, recurrence, normalization and actual-batch resource checks. CUDA execution was validated outside the sandbox. A failure stops its component and records no architecture verdict. These gates do not authorize G1 continuation, M4, H16, actor training or rendering; the legacy gates below are unchanged.
+The separate TC-LeWM–Mamba family uses [component-scoped M0–M3 gates](lewm/STATUS.md) in `lewm_diagnostics.py`: source/data/device, objective, construction, recurrence, normalization and actual-batch resource checks. CUDA execution was validated outside the sandbox. A failure stops its component and records no architecture verdict. These gates do not authorize G1 continuation, M4, H16, actor training or rendering; the legacy gates below are unchanged.
 
 What must hold before any number from this repo is a result. Gates run on the
 deployment device across the Stage-A lattice — `{flow, direct} × {attention,

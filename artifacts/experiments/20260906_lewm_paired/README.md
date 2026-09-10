@@ -12,7 +12,7 @@ After an environment refresh, the original paired launcher was absent and an exp
 
 ## G1 at update2,000
 
-The pre-training [protocol](TC_LEWM_G1_PROTOCOL.md) and [sealed report](evidence/paired_joint_20260906/g1_screen.json) use256 TRAIN and128 DEV episodes, four fixed windows each. The actual first update has identical prediction loss and different regularization loss. Both checkpoint normalization and recurrence gates passed then.
+The pre-training [protocol](../../../d4mj/spec/lewm/G1_PROTOCOL.md) and [sealed report](evidence/g1_screen.json) use256 TRAIN and128 DEV episodes, four fixed windows each. The actual first update has identical prediction loss and different regularization loss. Both checkpoint normalization and recurrence gates passed then.
 
 | Diagnostic | Raw | TC |
 |---|---:|---:|
@@ -36,7 +36,7 @@ Under the original execution contract, both final checkpoints fail the full-stac
 
 Normalization and the first mixer's FP32/BF16 source/reference/gradient audits pass independently for both. At lengths2/17/65/257, the FP32 reference's largest full-stack scan/step SSM discrepancy is3.87e-7 for raw and1.49e-7 for TC. The original Triton maximum is3.32e-4 for raw and1.09e-4 for TC over those inputs. Weights and buffers remain unchanged. These measurements localize a numerical contract failure; they do not establish a training or semantic failure.
 
-The pinned upstream chunk-state kernel calls `tl.dot` without an explicit FP32 input precision. The installed Triton implementation defaults those tensor-core FP32 products to TF32, independently of PyTorch's matmul TF32 setting. The [IEEE diagnostic](evidence/paired_joint_20260906/ieee_diagnostic.json) changes only `TRITON_F32_DEFAULT` from unset to `ieee`, after validating the original checkpoints and before the first Triton kernel invocation. **Both complete recurrence audits then pass the unchanged tolerance profile.** Maximum full-state discrepancies are1.91e-6 raw and1.31e-6 TC; source-forward errors are3.58e-7. The gradient and branch checks also pass. Weights/buffers are unchanged and the diagnostic restores its original environment.
+The pinned upstream chunk-state kernel calls `tl.dot` without an explicit FP32 input precision. The installed Triton implementation defaults those tensor-core FP32 products to TF32, independently of PyTorch's matmul TF32 setting. The [IEEE diagnostic](evidence/ieee_diagnostic.json) changes only `TRITON_F32_DEFAULT` from unset to `ieee`, after validating the original checkpoints and before the first Triton kernel invocation. **Both complete recurrence audits then pass the unchanged tolerance profile.** Maximum full-state discrepancies are1.91e-6 raw and1.31e-6 TC; source-forward errors are3.58e-7. The gradient and branch checks also pass. Weights/buffers are unchanged and the diagnostic restores its original environment.
 
 This intervention supports a source-kernel FP32 precision explanation. It is not a silent rewrite of the recorded research environment, a tolerance increase, a new training run or authorization of a learned horizon. Use explicit IEEE precision in the next numerical contract; retain the original TF32 reports as historical failures. The existing source guards correctly prevent pretending that an IEEE process has the old execution identity. Any later phase must record its explicit environment and frozen parent lineage.
 
@@ -44,7 +44,7 @@ Fresh full-corpus IEEE preflights subsequently passed all eight components for b
 
 ## Independent completed-encoder results
 
-The [completed component audit](evidence/paired_joint_20260906/completed_components.json) stops dependent world prediction at the failed original recurrence gate and evaluates the encoder boundary independently, under the original environment. It uses exactly the G1 windows, fixed TRAIN-only probes and support rules.
+The [completed component audit](evidence/completed_components.json) stops dependent world prediction at the failed original recurrence gate and evaluates the encoder boundary independently, under the original environment. It uses exactly the G1 windows, fixed TRAIN-only probes and support rules.
 
 | Diagnostic at10,000 | Raw | TC |
 |---|---:|---:|
@@ -65,6 +65,6 @@ The numerical issue has a concrete IEEE precision remedy without wider tolerance
 
 ## Evidence and reproduction
 
-See [the evidence index](evidence/paired_joint_20260906/README.md). The complete local run is `artifacts/lewm_gates_20260906/paired/`; large weights, feature/probe rows and per-update histories remain there. The committed JSON reports retain their SHA256 identities and original artifact paths. The existing source and checkpoint guards remain active.
+See [the evidence index](evidence/README.md). The complete local run is `artifacts/lewm_gates_20260906/paired/`; large weights, feature/probe rows and per-update histories remain there. The committed JSON reports retain their SHA256 identities and original artifact paths. The existing source and checkpoint guards remain active.
 
 The final audit initially compared an in-memory tuple with its saved JSON list. That audit-driver error was corrected before interpreting window equality; the original failed report and exact driver are preserved locally. The corrected audit confirms identical G1 windows. Later evaluation continues independent encoder probes when recurrence fails, while marking dependent prediction and all control paths blocked. No failed report is overwritten or relabeled as passing.

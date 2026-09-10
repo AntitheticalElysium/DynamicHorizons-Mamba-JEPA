@@ -1,6 +1,6 @@
 # Dreamer 4 + JEPA + Mamba — Global Architecture Draft
 
-The independent TC-LeWM–Mamba family now has M0–M3 implemented: jointly trained framewise encoder/world, functional completed-pair recurrence and its final state API. See [actual implementation and gates](../docs/TC_LEWM_M0_M3_STATUS.md) and [new-family architecture](../docs/TC_LEWM_ARCHITECTURE.md). Both families now use [shared infrastructure and runtime adapters](../docs/INTEGRATION_REFACTOR.md). Its unbounded one-token latent and predictive state are separate from the legacy contracts below; M4/H16/actor/renderer remain blocked.
+The independent TC-LeWM–Mamba family now has M0–M3 implemented: jointly trained framewise encoder/world, functional completed-pair recurrence and its final state API. See [actual implementation and gates](lewm/STATUS.md) and [new-family architecture](lewm/ARCHITECTURE.md). Both families now use [shared infrastructure and runtime adapters](lewm/INTEGRATION.md). Its unbounded one-token latent and predictive state are separate from the legacy contracts below; M4/H16/actor/renderer remain blocked.
 
 **Status:** System map for review, not a component specification.
 

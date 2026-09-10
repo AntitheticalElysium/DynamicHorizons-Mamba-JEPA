@@ -1,6 +1,6 @@
 # Decisions and function plan
 
-Scoped implementation addition: the independent TC-LeWM–Mamba M0–M3 files and methods are listed in the [implemented function map](../docs/TC_LEWM_M0_M3_STATUS.md#implemented-file-and-api-map), with source/engineering resolutions TC-29–34 in the [decision ledger](../docs/TC_LEWM_DECISIONS.md). The [integration record](../docs/INTEGRATION_REFACTOR.md) documents shared infrastructure and the concrete legacy/new-family adapters. This extends the file/function contract for the new family; legacy functions and S-decisions below remain in force. Later-phase methods in the end-state roadmap are not implemented.
+Scoped implementation addition: the independent TC-LeWM–Mamba M0–M3 files and methods are listed in the [implemented function map](lewm/STATUS.md#implemented-file-and-api-map), with source/engineering resolutions TC-29–34 in the [decision ledger](lewm/DECISIONS.md). The [integration record](lewm/INTEGRATION.md) documents shared infrastructure and the concrete legacy/new-family adapters. This extends the file/function contract for the new family; legacy functions and S-decisions below remain in force. Later-phase methods in the end-state roadmap are not implemented.
 
 Companion to `ARCHITECTURE.md`. That file says what the system is; this one says
 what is settled, what is open, and exactly which functions exist.

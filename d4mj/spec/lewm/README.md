@@ -1,14 +1,14 @@
 # TC-LeWM–Mamba: architecture, implementation and gates
 
-Status: **M0–M3 are committed and integrated into shared infrastructure. The first raw/TC pair passed G1 and completed10,000 joint updates per arm; see the [research results and component stops](TC_LEWM_PAIRED_RESULTS.md). M4–M8 remain proposed and blocked.** Implementation contracts are recorded in [M0–M3 status](TC_LEWM_M0_M3_STATUS.md). The initial design/history review covered `162efd1` on `craftax-clean-baseline`, 2026-09-05. No learned-control or architecture-success result is claimed.
+Status: **M0–M3 are committed and integrated into shared infrastructure. The first raw/TC pair passed G1 and completed10,000 joint updates per arm; see the [research results and component stops](../../../artifacts/experiments/20260906_lewm_paired/README.md). M4–M8 remain proposed and blocked.** Implementation contracts are recorded in [M0–M3 status](STATUS.md). The initial design/history review covered `162efd1` on `craftax-clean-baseline`, 2026-09-05. No learned-control or architecture-success result is claimed.
 
 ## Recommendation and project goal
 
-**Current scope:** the user authorized M0–M3 of the actual architecture, including persistent recurrence and the final state API, and explicitly rejected a disposable prototype. The [risk review](TC_LEWM_RISK_REVIEW.md) retains 12 substantive adaptation groups for the full roadmap; eight concern M0–M3. Component tests reduce engineering uncertainty, not the unresolved scientific risks.
+**Current scope:** the user authorized M0–M3 of the actual architecture, including persistent recurrence and the final state API, and explicitly rejected a disposable prototype. The [risk review](RISK_REVIEW.md) retains 12 substantive adaptation groups for the full roadmap; eight concern M0–M3. Component tests reduce engineering uncertainty, not the unresolved scientific risks.
 
 Proceed with a bounded **jointly trained LeWorldModel encoder and action-conditioned Mamba world**, comparing ordinary SIGReg with temporally centered SIGReg. Retain the existing D4-inspired heads and imagination actor training after a separate recursive training bridge. Add a frozen-representation decoder for interactive imagined play.
 
-This preserves the question in the repository [README](../../README.md): can JEPA-style prediction and Mamba memory retain the mechanics needed for control at modest compute? It also serves the goal of taking actions inside a learned game. It changes the original controlled study: a jointly trained encoder/world is a new system family, not a replacement encoder in the shared-tokenizer `Flow|Direct × Attention|Mamba` experiment. Keep that experiment independently runnable and describe the change of scope explicitly.
+This preserves the question in the repository [README](../../../README.md): can JEPA-style prediction and Mamba memory retain the mechanics needed for control at modest compute? It also serves the goal of taking actions inside a learned game. It changes the original controlled study: a jointly trained encoder/world is a new system family, not a replacement encoder in the shared-tokenizer `Flow|Direct × Attention|Mamba` experiment. Keep that experiment independently runnable and describe the change of scope explicitly.
 
 Direct deliberately replaces D4's generator. It was not intended to reproduce it. Local Flow is also a small, adapted implementation. Neither establishes parity with the published Dreamer 4 system. A well-specified external comparison remains possible, but D4 parity need not be the project's success criterion.
 
@@ -20,7 +20,7 @@ Joint learning removes the requirement that dynamics predict a representation op
 
 They do not prove that the retained variation is controllable, that health and inventory survive a global bottleneck, that a deterministic predictor models stochastic branches, or that the critic values actions correctly. Predictable but irrelevant motion can satisfy the objective. Short-window centering can also underprotect slowly changing information needed for long-term decisions. A framewise 192-dimensional latent may be a new information bottleneck. These are reasons for discriminating tests, not assumptions to hide behind a successful loss curve.
 
-TC-LeWM's reported setting is robot policy learning; it does not establish success for our recurrent imagination actor. Its results and theory do not guarantee Craftax transfer. The source is the [TC-LeWM v3 paper](https://arxiv.org/abs/2607.26924v3), with the [pinned base implementation](../../third_party/sources/lucas-maes__le-wm/train.py) supplying executable objective details. No canonical TC implementation was available on the [project page](https://ryuuchou17.github.io/tclewm/) at this review; it said “Code coming soon.”
+TC-LeWM's reported setting is robot policy learning; it does not establish success for our recurrent imagination actor. Its results and theory do not guarantee Craftax transfer. The source is the [TC-LeWM v3 paper](https://arxiv.org/abs/2607.26924v3), with the [pinned base implementation](../../../third_party/sources/lucas-maes__le-wm/train.py) supplying executable objective details. No canonical TC implementation was available on the [project page](https://ryuuchou17.github.io/tclewm/) at this review; it said “Code coming soon.”
 
 History supplies motivation rather than a diagnosis of one guilty component:
 
@@ -39,14 +39,14 @@ A concrete trap: [Dedieu et al., Table 1](https://arxiv.org/html/2502.01591v3) m
 
 ## Reading order
 
-Start with the [shared-runtime integration record](INTEGRATION_REFACTOR.md), [implementation status](TC_LEWM_M0_M3_STATUS.md) and [risk review](TC_LEWM_RISK_REVIEW.md). The remainder describes the full roadmap, with M4 onward still deferred.
+Start with the [shared-runtime integration record](INTEGRATION.md), [implementation status](STATUS.md) and [risk review](RISK_REVIEW.md). The remainder describes the full roadmap, with M4 onward still deferred.
 
-1. [Architecture](TC_LEWM_ARCHITECTURE.md): tensor contracts, recurrent state, gradients, phase boundaries, and imagined play.
-2. [Decisions and hyperparameters](TC_LEWM_DECISIONS.md): source facts versus proposed settings, explicit deviations, unresolved items, and conditions for changing the recipe.
-3. [Implementation plan](TC_LEWM_IMPLEMENTATION_PLAN.md): dependency order, file/function changes, tests, checkpoints, CLI, and artifacts.
-4. [Evaluation and stop rules](TC_LEWM_EVALUATION.md): the smallest discriminating experiment, fair comparisons, real control, and validated dream horizons.
+1. [Architecture](ARCHITECTURE.md): tensor contracts, recurrent state, gradients, phase boundaries, and imagined play.
+2. [Decisions and hyperparameters](DECISIONS.md): source facts versus proposed settings, explicit deviations, unresolved items, and conditions for changing the recipe.
+3. [Implementation plan](IMPLEMENTATION.md): dependency order, file/function changes, tests, checkpoints, CLI, and artifacts.
+4. [Evaluation and stop rules](EVALUATION.md): the smallest discriminating experiment, fair comparisons, real control, and validated dream horizons.
 
-The existing [architecture](../spec/ARCHITECTURE.md), [decisions](../spec/DECISIONS.md), and [gates](../spec/GATES.md) remain the specification of the existing family. During implementation, add a scoped cross-reference and a new-family section; do not retroactively rewrite its shapes, state semantics, or experiment results. The old decision identifier `S84` is duplicated; refer to its heading/commit until separately repaired. This proposal uses unique `TC-*` identifiers.
+The existing [architecture](../ARCHITECTURE.md), [decisions](../DECISIONS.md), and [gates](../GATES.md) remain the specification of the existing family. During implementation, add a scoped cross-reference and a new-family section; do not retroactively rewrite its shapes, state semantics, or experiment results. The old decision identifier `S84` is duplicated; refer to its heading/commit until separately repaired. This proposal uses unique `TC-*` identifiers.
 
 ## What is settled versus proposed
 
@@ -54,4 +54,4 @@ Settled by the request: preserve the broad JEPA/Mamba/control goal; target Craft
 
 **M0–M3 settings are explicit in the checked-in raw/TC recipes.** TC-29–34 record implementation resolutions, numerical tolerances and launch boundaries. Later-phase numbers remain proposals. Each run seals its resolved recipe, source and data identities before training. The first expensive run must not precede the source, memory, normalization, retention, and resource checks. No architecture can make the requested outcome “extremely likely” or guaranteed from the evidence currently available.
 
-The [G1 execution protocol](TC_LEWM_G1_PROTOCOL.md) defines the implemented paired screening gate and its evaluation-only choices. Run `python -m d4mj paired-run --dataset artifacts/craftax_support_v2 --out <fresh-directory>` to seal both preflights and initial checkpoints, train to2,000, evaluate G1 and continue only an accepted original budget. M4 remains blocked.
+The [G1 execution protocol](G1_PROTOCOL.md) defines the implemented paired screening gate and its evaluation-only choices. Run `python -m d4mj paired-run --dataset artifacts/craftax_support_v2 --out <fresh-directory>` to seal both preflights and initial checkpoints, train to2,000, evaluate G1 and continue only an accepted original budget. M4 remains blocked.
