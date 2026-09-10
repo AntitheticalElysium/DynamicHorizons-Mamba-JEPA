@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -41,20 +42,21 @@ import numpy as np
 import torch
 from torch import Tensor, nn
 
-from .config import Config, config_from_dict, recipe_digest
-from .data import _sha256, atomic_manifest
-from .diagnostics import binary_auc
-from .lewm_config import LeWMConfig
-from .sources import lewm_source_manifest
-from .world_api import ModelBundle
+from .cache import active, memoized, PROBE_SETTINGS, REPLAY_SETTINGS, content, resolve_payload
+from ..config import Config, config_from_dict, recipe_digest
+from ..data import _sha256, atomic_manifest
+from ..diagnostics import binary_auc
+from ..lewm_config import LeWMConfig
+from ..sources import lewm_source_manifest
+from ..world_api import ModelBundle
 
 
-ROOT = Path(__file__).resolve().parent.parent
-SCHEMA = "d4mj_m03_capability_gate_v2"
-SIDECAR_SCHEMA = "d4mj_m03_probe_sidecar_v2"
-RUN_SCHEMA = "d4mj_m03_run_v2"
-FEATURE_SCHEMA = "d4mj_m03_feature_cache_v2"
-STAGE_SCHEMA = "d4mj_m03_stage_cache_v2"
+ROOT = Path(__file__).resolve().parents[2]
+SCHEMA = "d4mj_m03_capability_gate"
+SIDECAR_SCHEMA = "d4mj_m03_probe_sidecar"
+RUN_SCHEMA = "d4mj_m03_run"
+FEATURE_SCHEMA = "d4mj_m03_feature_cache"
+STAGE_SCHEMA = "d4mj_m03_stage_cache"
 DIRECT_INPUT_PROTOCOL = "native_prefix64_with_first_incoming_action_v1"
 # The primary fork is the exact key that produced the recorded next observation.
 # It makes the logged action an executable factual-replay assertion while still
@@ -190,13 +192,26 @@ def _input_identity(path: Path) -> dict[str, str]:
 
 
 def _run_contract(*, raw_checkpoint: Path, tc_checkpoint: Path, dataset: Path, settings: M03Settings,
-                  device: str, include_direct: bool, structural_smoke: bool) -> dict[str, Any]:
+                  device: str, include_direct: bool, structural_smoke: bool, include_history: bool = True) -> dict[str, Any]:
     """Identity of every immutable input needed to resume safely."""
+
+    import importlib.util
+    craftax_root = Path(importlib.util.find_spec("craftax").origin).parent
 
     contract: dict[str, Any] = {
         "schema": RUN_SCHEMA,
         "evaluator_source": _input_identity(Path(__file__)),
+        "cache_source": _input_identity(Path(__file__).with_name("cache.py")),
+        "cache_compatibility": active().compatibility_identity if active() is not None else None,
         "replay_source": _input_identity(ROOT / "artifacts/eda/replay.py"),
+        "diagnostics_source": _input_identity(ROOT / "d4mj/m03/diagnostics.py"),
+        "historical_source": _input_identity(ROOT / "d4mj/m03/history.py"),
+        "environment_source": _input_identity(ROOT / "d4mj/env.py"),
+        "evaluation_sources": [_input_identity(ROOT / p) for p in (
+            "d4mj/m03/diagnostics.py", "d4mj/diagnostics.py", "d4mj/data.py", "d4mj/config.py",
+            "d4mj/representation.py", "d4mj/transition.py", "d4mj/world_api.py", "artifacts/eda/legacy.py")],
+        "historical_panels_included": include_history,
+        "simulator_sources": [_input_identity(p) for p in sorted(craftax_root.rglob("*.py"))],
         "settings": asdict(settings),
         "dataset": _input_identity(dataset),
         "raw_checkpoint": _input_identity(raw_checkpoint),
@@ -204,14 +219,32 @@ def _run_contract(*, raw_checkpoint: Path, tc_checkpoint: Path, dataset: Path, s
         "execution": {"device": device, "structural_smoke": structural_smoke,
                       "direct_anchors_included": include_direct},
     }
+    if include_history:
+        from .history import source_paths
+        contract["historical_inputs"] = [_input_identity(p) for p in source_paths(ROOT)]
     if include_direct:
         report = ROOT / "artifacts/eda/capacity6k/n64d16_s1/training_report.json"
         contract["direct_anchors"] = {
             "encoder": _input_identity(report.parent / "encoder_006000.pt"),
+            "encoder_report": _input_identity(report),
             "attention": _input_identity(ROOT / "artifacts/eda/v2_direct_attention/world_020000.pt"),
             "mamba": _input_identity(ROOT / "artifacts/eda/v2_direct_mamba/world_020000.pt"),
         }
+    contract["replay_dependencies"] = _replay_dependencies(contract, settings)
     return contract
+
+
+def _replay_dependencies(contract, settings):
+    from .history import replay_seed, verify_reference
+    from .diagnostics import state_features
+    from .cache import implementation
+    functions = (_state_scalars, _state_binary_labels, _action_outcomes, state_features,
+                 replay_seed, verify_reference)
+    return {'dataset':content(contract['dataset']), 'historical_inputs':content(contract.get('historical_inputs', [])),
+            'replay_source':content(contract['replay_source']), 'environment':content(contract['environment_source']),
+            'simulator':content(contract['simulator_sources']),
+            'settings':{k:getattr(settings,k) for k in REPLAY_SETTINGS},
+            'code':[implementation(fn) for fn in functions]}
 
 
 def _open_run(output: Path, contract: dict[str, Any]) -> str:
@@ -393,7 +426,11 @@ def _candidate_rows(replay, split: str, count: int, settings: M03Settings) -> li
     # "Broad" means a non-terminal *time*, not a timeout-only episode.  It may
     # come from a terminal trajectory as long as that episode did not supply a
     # terminal-tail root; this maintains distinct bootstrap units.
-    broad = [row for row in eligible if (row["shard"], row["slot"]) not in selected_keys]
+    broad = [
+        row for row in eligible
+        if (row["shard"], row["slot"]) not in selected_keys
+        and _broad_time_range(row["steps"], settings) is not None
+    ]
     wanted_broad = count - wanted_terminal
     if len(broad) < wanted_broad:
         raise RuntimeError(f"m03_coverage: {split} lacks required distinct broad episode roots")
@@ -401,10 +438,23 @@ def _candidate_rows(replay, split: str, count: int, settings: M03Settings) -> li
     for pick in choices.tolist():
         row = dict(broad[pick])
         row["stratum"] = "broad"
-        row["t"] = int(rng.integers(settings.direct_context - 1, row["steps"] - 1))
+        low, high = _broad_time_range(row["steps"], settings)
+        row["t"] = int(rng.integers(low, high))
         selected.append(row)
     rng.shuffle(selected)
     return selected
+
+
+def _broad_time_range(steps: int, settings: M03Settings) -> tuple[int, int] | None:
+    """Half-open root-time range with both a native prefix and successor.
+
+    A 64-action episode can supply the terminal action at t=63, but it cannot
+    supply a non-terminal root after the 64-frame Direct prefix.  Keeping that
+    distinction explicit avoids passing an empty interval to ``rng.integers``.
+    """
+
+    low, high = settings.direct_context - 1, steps - 1
+    return None if low >= high else (low, high)
 
 
 def _stack_rows(rows: list[dict[str, Any]], names: tuple[str, ...]) -> dict[str, Any]:
@@ -413,6 +463,7 @@ def _stack_rows(rows: list[dict[str, Any]], names: tuple[str, ...]) -> dict[str,
     tensor = lambda key: torch.from_numpy(np.stack([row[key] for row in rows]))
     return {
         "context": tensor("context"), "past_actions": tensor("past_actions").long(), "successors": tensor("successors"),
+        **{k: tensor(k).float() for k in ("oracle_visible", "oracle_timing", "oracle_full_state")},
         "root_continuous": tensor("root_continuous").float(), "root_binary": tensor("root_binary").bool(),
         "next_continuous": tensor("next_continuous").float(), "next_binary": tensor("next_binary").bool(),
         "outcomes": tensor("outcomes").bool(), "modes": tensor("modes").bool(),
@@ -531,7 +582,9 @@ def build_sidecar(dataset: Path, output: Path, settings: M03Settings) -> dict[st
                                                     root_binary=root_binary,
                                                     successor_binary=_state_binary_labels(stochastic_next), replay=replay))
                 modes.append(np.stack(sampled))
+            from .diagnostics import state_features
             rows_by_split[split].append({
+                **state_features(state),
                 "context": context, "past_actions": actions, "successors": np.stack(successors),
                 "root_continuous": root_continuous, "root_binary": root_binary,
                 "next_continuous": np.stack(next_continuous), "next_binary": np.stack(next_binary),
@@ -588,9 +641,22 @@ def _load_or_build_sidecar(dataset: Path, output: Path, settings: M03Settings) -
 
     output, dataset = Path(output), Path(dataset).resolve()
     sidecar_path, manifest_path = output / "sidecar.probe_only.pt", output / "manifest.json"
+    cache = active()
+    replay_dependencies = None
+    if cache is not None:
+        parent = json.loads((output.parent/'run.json').read_text())['contract']
+        replay_dependencies = dict(parent['replay_dependencies'])
+        replay_dependencies.pop('historical_inputs',None)
+        key, _ = cache.key('primary_replay',replay_dependencies)
+        row = cache.db.execute('SELECT external FROM nodes WHERE key=?',(key,)).fetchone()
+        source = Path(row[0]).parent if row and row[0] else cache.imports.get('sidecar')
+        if not output.exists() and source:
+            if row: cache.read(key)  # Integrity before hard-linking the raw object.
+            output.mkdir(parents=True)
+            for name in ('sidecar.probe_only.pt','manifest.json'):
+                os.link(Path(source)/name, output/name)
     if not output.exists():
-        payload = build_sidecar(dataset, output, settings)
-        return payload, json.loads((output / "manifest.json").read_text())
+        build_sidecar(dataset, output, settings)
     if not sidecar_path.exists() or not manifest_path.exists():
         raise RuntimeError("m03_resume: sidecar directory is incomplete; refusing to trust partial replay bytes")
     manifest = json.loads(manifest_path.read_text())
@@ -600,7 +666,9 @@ def _load_or_build_sidecar(dataset: Path, output: Path, settings: M03Settings) -
         "direct_input_protocol": DIRECT_INPUT_PROTOCOL,
     }
     for name, value in expected.items():
-        if manifest.get(name) != value:
+        equal = ({k:manifest.get(name, {}).get(k) for k in REPLAY_SETTINGS} == {k:value[k] for k in REPLAY_SETTINGS}
+                 if name == 'settings' else manifest.get(name) == value)
+        if not equal:
             raise ValueError(f"m03_resume: sidecar {name} differs from this run contract")
     if (manifest.get("replay", {}).get("status") != "pass"
             or manifest["replay"].get("root_pixel_tolerance") != REPLAY_PIXEL_TOLERANCE
@@ -617,11 +685,14 @@ def _load_or_build_sidecar(dataset: Path, output: Path, settings: M03Settings) -
     payload = torch.load(sidecar_path, map_location="cpu", weights_only=False)
     if (payload.get("schema") != SIDECAR_SCHEMA or payload.get("probe_only") is not True
             or payload.get("dataset_sha256") != expected["dataset_sha256"]
-            or payload.get("settings") != expected["settings"]
+            or {k:payload.get("settings", {}).get(k) for k in REPLAY_SETTINGS} != {k:expected["settings"][k] for k in REPLAY_SETTINGS}
             or payload.get("direct_input_protocol") != DIRECT_INPUT_PROTOCOL
             or payload.get("primary_fork_protocol") != PRIMARY_FORK_PROTOCOL
             or payload.get("mode_fork_protocol") != MODE_FORK_PROTOCOL):
         raise ValueError("m03_resume: cached sidecar payload contract mismatch")
+    if cache is not None:
+        cache.get('primary_replay',replay_dependencies,lambda:payload,
+                  external=(sidecar_path,_sha256(sidecar_path),None))
     return payload, manifest
 
 
@@ -670,8 +741,8 @@ def load_m03_bundle(path: Path, *, device: str, dataset_sha256: str) -> tuple[Mo
 def _load_legacy_cpu(path: Path, config: Config, **objects) -> dict:
     """Read historical CUDA snapshots on either CPU or CUDA without weakening identity checks."""
 
-    from .checkpoint import FORMAT
-    from .sources import verify_sources
+    from ..checkpoint import FORMAT
+    from ..sources import verify_sources
 
     payload = torch.load(path, map_location="cpu", weights_only=False)
     if payload.get("format") != FORMAT:
@@ -692,8 +763,8 @@ def _load_legacy_cpu(path: Path, config: Config, **objects) -> dict:
 def _legacy_anchor(name: str, *, device: str) -> tuple[ModelBundle, dict]:
     """Load the common MAE export plus a declared historical Direct world anchor."""
 
-    from .representation import Decoder, Encoder
-    from .transition import World
+    from ..representation import Decoder, Encoder
+    from ..transition import World
 
     if name not in ("direct_attention", "direct_mamba"):
         raise ValueError("m03_anchor: unknown legacy anchor")
@@ -741,7 +812,7 @@ def _load_or_encode_features(output: Path, *, arm: str, split: str, identity: di
             if (manifest.get("schema") != FEATURE_SCHEMA or manifest.get("metadata_sha256") != metadata_sha256
                     or manifest.get("sha256") != _sha256(path)):
                 raise ValueError(f"m03_resume: cached {arm}/{split} features have a different identity or hash")
-        payload = torch.load(path, map_location="cpu", weights_only=False)
+        payload = resolve_payload(torch.load(path, map_location="cpu", weights_only=False))
         if payload.get("schema") != FEATURE_SCHEMA or _sha(payload.get("metadata")) != metadata_sha256:
             raise ValueError(f"m03_resume: cached {arm}/{split} feature payload contract mismatch")
         features = payload.get("features")
@@ -751,19 +822,58 @@ def _load_or_encode_features(output: Path, *, arm: str, split: str, identity: di
         # A process may have stopped after atomic tensor publication and before
         # publishing its small manifest.  The validated tensor is safe to adopt.
         if not manifest_path.exists():
-            _atomic_json_save(manifest_path, {"schema": FEATURE_SCHEMA, "sha256": _sha256(path),
-                                              "metadata_sha256": metadata_sha256})
-        return features, _sha256(manifest_path)
+            manifest = {"schema": FEATURE_SCHEMA, "sha256": _sha256(path), "metadata_sha256": metadata_sha256}
+            if 'cache_ref' in payload: manifest['dependency_key'] = payload['cache_ref']['key']
+            _atomic_json_save(manifest_path, manifest)
+        return features, manifest.get("dependency_key", _sha256(manifest_path))
 
     if manifest_path.exists():
         raise RuntimeError(f"m03_resume: cached {arm}/{split} manifest lacks its tensor payload")
-    features = encode()
+    cache = active()
+    dependency_key = None
+    if cache is not None:
+        dependencies = _feature_dependencies(arm, split, identity, sidecar_sha256, cache)
+        external = cache.imports.get('features', {}).get((arm, split))
+        features, dependency_key = cache.get('features:'+arm+':'+split, dependencies, encode, external=external)
+    else:
+        features = encode()
     if not features or not all(isinstance(value, Tensor) and value.device.type == "cpu" for value in features.values()):
         raise ValueError(f"m03_cache: {arm}/{split} encoder returned non-CPU tensors")
-    _atomic_torch_save(path, {"schema": FEATURE_SCHEMA, "metadata": metadata, "features": features})
-    _atomic_json_save(manifest_path, {"schema": FEATURE_SCHEMA, "sha256": _sha256(path),
-                                      "metadata_sha256": metadata_sha256})
-    return features, _sha256(manifest_path)
+    payload = {"schema": FEATURE_SCHEMA, "metadata": metadata}
+    if cache is None:
+        payload['features'] = features
+    else:
+        payload['cache_ref'] = {'database':str(cache.path),'key':dependency_key}
+    _atomic_torch_save(path, payload)
+    manifest = {"schema": FEATURE_SCHEMA, "sha256": _sha256(path), "metadata_sha256": metadata_sha256}
+    if dependency_key: manifest['dependency_key'] = dependency_key
+    _atomic_json_save(manifest_path, manifest)
+    return features, dependency_key or _sha256(manifest_path)
+
+
+def _feature_dependencies(arm, split, identity, sidecar, cache):
+    from . import history, diagnostics
+    settings = cache.settings
+    if arm == 'replay':
+        functions = (history.replay_seed, history.verify_reference, _state_scalars,
+                     _state_binary_labels, _action_outcomes, diagnostics.state_features)
+        fields = REPLAY_SETTINGS
+    elif split.startswith(('primary_', 'historical_')):
+        functions = (diagnostics.encode_memory, diagnostics.shuffle_completed_pairs)
+        fields = ('seed','encode_batch')
+    elif arm in ('raw','tc'):
+        functions = (_encode_lewm,)
+        fields = ('lewm_context','encode_batch')
+    else:
+        functions = (_encode_legacy, _legacy_native_parity_preflight)
+        fields = ('direct_context','direct_encode_batch','direct_successor_batch')
+    # API/runtime changes invalidate their encodings; an unrelated probe edit does not.
+    runtime = ('world_api.py','state.py','data.py','config.py') + (
+        ('lewm.py','lewm_config.py','mamba_recurrence.py') if arm in ('raw','tc') else
+        ('representation.py','transition.py','time_mixer.py'))
+    return {'identity': identity, 'data': sidecar, 'functions':[cache.code(f) for f in functions],
+            'execution':dict({k:getattr(settings,k) for k in fields},device=cache.device if arm != 'replay' else 'cpu'),
+            'runtime':{p:_sha256(ROOT/'d4mj'/p) for p in runtime if (ROOT/'d4mj'/p).exists()}}
 
 
 def _load_or_compute_stage(output: Path, name: str, metadata: dict[str, Any], compute) -> dict[str, Any]:
@@ -780,9 +890,19 @@ def _load_or_compute_stage(output: Path, name: str, metadata: dict[str, Any], co
         if not isinstance(record.get("result"), dict):
             raise ValueError(f"m03_resume: cached {name} stage has no result")
         return record["result"]
-    result = compute()
+    cache = active()
+    scope = 'historical' if Path(output).name == 'historical' else 'primary'
+    imported = cache.imports.get('stages', {}).get((scope,name)) if cache else None
+    if imported:
+        origin, checksum, selector = imported
+        if _sha256(Path(origin)) != checksum: raise ValueError('m03_import: completed stage bytes changed')
+        result = json.loads(Path(origin).read_text())['result']
+        if selector: result = result[selector]
+        cache.counts['import:stage'] += 1
+    else:
+        result = compute()
     _atomic_json_save(path, {"schema": STAGE_SCHEMA, "metadata_sha256": metadata_sha256,
-                             "metadata": metadata, "result": result})
+                             "metadata": metadata, "result": result, "imported_from": imported})
     return result
 
 
@@ -819,11 +939,16 @@ def _encode_lewm(bundle: ModelBundle, values: dict[str, Any], settings: M03Setti
 @torch.inference_mode()
 def _encode_legacy(bundle: ModelBundle, values: dict[str, Any], settings: M03Settings) -> dict[str, Tensor]:
     context, actions, successors = values["context"], values["past_actions"], values["successors"]
-    if context.shape[1] != settings.direct_context or actions.shape[1] != settings.direct_context - 1:
+    length = context.shape[1]
+    if not 1 <= length <= settings.direct_context or actions.shape[1] != length - 1:
         raise ValueError("m03_direct_context: sidecar does not carry the sealed native Direct prefix")
     first_incoming = values.get("direct_first_action")
     if not isinstance(first_incoming, Tensor) or first_incoming.shape != (len(context),):
         raise ValueError("m03_direct_context: sidecar lacks the first incoming action for each native prefix")
+    if length < settings.direct_context:
+        times = values.get("time")
+        if times is None or not bool((times == length-1).all()) or not bool((first_incoming == 17).all()):
+            raise ValueError("m03_direct_context: short history must start at the true episode BOS")
     required = max(bundle.config.receptive_field, bundle.config.dynamics_context)
     if settings.direct_context < required:
         raise ValueError(f"m03_direct_context: {settings.direct_context} truncates native Direct context {required}")
@@ -873,7 +998,7 @@ def _legacy_native_parity_preflight(bundle: ModelBundle, values: dict[str, Any],
     without importing any old labels, heads, or reported measurements.
     """
 
-    from .transition import commit_inputs
+    from ..transition import commit_inputs
 
     if bundle.config.transition != "direct":
         raise ValueError("m03_direct_parity: requires a Direct anchor")
@@ -883,6 +1008,8 @@ def _legacy_native_parity_preflight(bundle: ModelBundle, values: dict[str, Any],
         "successors": values["successors"][:1],
         "direct_first_action": values["direct_first_action"][:1],
     }
+    if "time" in values:
+        one["time"] = values["time"][:1]
     candidate = _encode_legacy(bundle, one, settings)
     frame = one["context"].to(bundle.device)
     past = one["past_actions"].to(bundle.device)
@@ -931,6 +1058,7 @@ def _standardize(train: Tensor, dev: Tensor) -> tuple[Tensor, Tensor]:
     return (train - mean) / scale, (dev - mean) / scale
 
 
+@memoized(PROBE_SETTINGS)
 def _fit_probe_many(train_x: Tensor, train_y: Tensor, evaluation_x: dict[str, Tensor], settings: M03Settings, *,
                     hidden: bool, binary: bool) -> dict[str, Tensor]:
     """Fit one sealed probe once and apply it to one or more held-out inputs.
@@ -978,6 +1106,7 @@ def _fit_probe(train_x: Tensor, train_y: Tensor, dev_x: Tensor, settings: M03Set
     return _fit_probe_many(train_x, train_y, {"dev": dev_x}, settings, hidden=hidden, binary=binary)["dev"]
 
 
+@memoized()
 def _ridge_predict(train_x: Tensor, train_y: Tensor, dev_x: Tensor, ridge: float) -> Tensor:
     """Linear raw-pixel reference via the dual ridge form (safe when p >> n)."""
 
@@ -990,12 +1119,130 @@ def _ridge_predict(train_x: Tensor, train_y: Tensor, dev_x: Tensor, ridge: float
     return (dev_x @ train_x.T @ solution).cpu()
 
 
+@lru_cache(maxsize=64)
+def _bootstrap_multiplicities(groups: int, draws: int, seed: int) -> np.ndarray:
+    """Exactly the legacy per-draw Torch RNG stream, cached as seed counts."""
+    rng = torch.Generator().manual_seed(seed)
+    selected = torch.stack([torch.randint(groups, (groups,), generator=rng) for _ in range(draws)])
+    offsets = torch.arange(draws)[:, None] * groups
+    result = torch.bincount((selected + offsets).flatten(), minlength=draws*groups).reshape(draws,groups).numpy().astype(np.int32)
+    result.setflags(write=False)
+    return result
+
+
+def _bootstrap_bounds(samples, draws):
+    samples = np.asarray(samples, dtype=np.float64)
+    samples = samples[np.isfinite(samples)]
+    if len(samples) < .95 * draws:
+        return None
+    # The original materializes Python floats with Torch's default dtype before
+    # quantiles. Retain that rounding instead of introducing a float64 interval.
+    return torch.tensor(samples.tolist()).quantile(torch.tensor([.025,.975])).tolist()
+
+
+def _bootstrap_mean_draws(values, mask, roots, *, draws, seed):
+    keys,inverse = roots.unique(sorted=True,return_inverse=True)
+    selected = mask.cpu().numpy().astype(bool); group = inverse.numpy()
+    columns = values.detach().cpu().double().numpy()
+    counts = np.bincount(group[selected],minlength=len(keys))
+    sums = np.stack([np.bincount(group[selected],weights=v[selected],minlength=len(keys)) for v in columns.T],1)
+    weights = _bootstrap_multiplicities(len(keys),draws,seed)
+    denominator = weights @ counts
+    result = np.full((draws,columns.shape[1]),np.nan)
+    np.divide(weights @ sums,denominator[:,None],out=result,where=denominator[:,None]>0)
+    # The old callbacks take float() of each float32 Torch mean.
+    return result.astype(np.float32).astype(np.float64)
+
+
+def _weighted_auc_draws(score, target, inverse, multiplicities):
+    """Sort once; tied-score positive/negative counts implement Mann-Whitney."""
+    score = score.detach().cpu().double().numpy()
+    if not np.isfinite(score).all(): raise ValueError('probe scores are nonfinite')
+    order = np.argsort(score, kind='stable')
+    labels = target.detach().cpu().bool().numpy()[order]
+    group = inverse[order]
+    sorted_score = score[order]
+    starts = np.r_[0, np.flatnonzero(sorted_score[1:] != sorted_score[:-1])+1]
+    samples = np.full(len(multiplicities), np.nan)
+    # Bound temporaries to a few MiB on the large all-action panels.
+    for first in range(0,len(multiplicities),32):
+        weights = multiplicities[first:first+32,group]
+        positive = np.add.reduceat(weights*labels[None],starts,axis=1,dtype=np.int64)
+        negative = np.add.reduceat(weights*(~labels)[None],starts,axis=1,dtype=np.int64)
+        p, n = positive.sum(1), negative.sum(1)
+        numerator = (positive*(negative.cumsum(1)-.5*negative)).sum(1)
+        valid = (p > 0) & (n > 0)
+        np.divide(numerator,p*n,out=samples[first:first+len(weights)],where=valid)
+    return samples
+
+
+def _auc_bootstrap(left, target, roots, *, draws, seed, right=None):
+    point = binary_auc(left,target)
+    if point is None: return None,None
+    if right is not None:
+        other = binary_auc(right,target)
+        if other is None: return None,None
+        point -= other
+    keys, inverse = roots.unique(sorted=True,return_inverse=True)
+    if len(keys) < 2: return point,None
+    counts = _bootstrap_multiplicities(len(keys),draws,seed)
+    samples = _weighted_auc_draws(left,target,inverse.numpy(),counts)
+    if right is not None:
+        samples -= _weighted_auc_draws(right,target,inverse.numpy(),counts)
+    return point,_bootstrap_bounds(samples,draws)
+
+
+def _regression_bootstrap(target, left, roots, *, draws, seed, right=None):
+    """Per-seed sufficient statistics; retain legacy fallback at degeneracy."""
+    def original(rows):
+        selected = target[rows]
+        denominator = (selected-selected.mean()).square().sum().clamp_min(1e-12)
+        if right is not None and float(denominator) <= 1e-12: return None
+        a = float(1-(left[rows]-selected).square().sum()/denominator)
+        return a if right is None else a-float(1-(right[rows]-selected).square().sum()/denominator)
+    point = original(torch.arange(len(roots)))
+    keys,inverse = roots.unique(sorted=True,return_inverse=True)
+    if point is None or len(keys) < 2: return point,None
+    group = inverse.numpy()
+    # Center first to avoid cancellation for large offsets / small variance.
+    y = target.detach().cpu().double().numpy(); centered = y-y[0]
+    if np.max(np.abs(y))*torch.finfo(target.dtype).eps > np.std(y)*1e-3:
+        return _root_bootstrap(left,roots,original,draws=draws,seed=seed)
+    columns = [np.ones(len(y)),centered,centered*centered,
+               (left-target).square().double().numpy()]
+    if right is not None: columns.append((right-target).square().double().numpy())
+    sums = np.stack([np.bincount(group,weights=v,minlength=len(keys)) for v in columns],1)
+    counts = _bootstrap_multiplicities(len(keys),draws,seed)
+    moments = counts @ sums
+    n, sy, sy2, error = moments[:,:4].T
+    variance_sum = sy2-sy*sy/n
+    denominator = np.maximum(variance_sum,1e-12)
+    samples = 1-error/denominator
+    if right is not None:
+        samples -= 1-moments[:,4]/denominator
+    # Cancellation and constant resamples need the exact old float32 rule.
+    threshold = np.maximum(1e-12,32*np.finfo(np.float64).eps*(np.abs(sy2)+sy*sy/n))
+    uncertain = np.flatnonzero(variance_sum <= threshold)
+    if len(uncertain):
+        groups = [torch.where(inverse==i)[0] for i in range(len(keys))]
+        rng = torch.Generator().manual_seed(seed)
+        uncertain = set(uncertain.tolist())
+        for index in range(draws):
+            selected = torch.randint(len(keys),(len(keys),),generator=rng)
+            if index in uncertain:
+                value = original(torch.cat([groups[i] for i in selected]))
+                samples[index] = np.nan if value is None else value
+    return point,_bootstrap_bounds(samples,draws)
+
+
 def _root_bootstrap(values: Tensor, roots: Tensor, fn, *, draws: int, seed: int) -> tuple[float | None, list[float] | None]:
     keys = roots.unique(sorted=True)
     all_indices = torch.arange(len(roots))
     point = fn(all_indices)
     if point is None:
         return None, None
+    if len(keys) < 2:
+        return point, None
     groups = [torch.where(roots == key)[0] for key in keys]
     rng = torch.Generator().manual_seed(seed)
     samples = []
@@ -1019,6 +1266,7 @@ def _expanded_roots(roots: Tensor, target: Tensor) -> Tensor:
     return roots.reshape(len(roots), *([1] * (target.ndim - 1))).expand_as(target).reshape(-1)
 
 
+@memoized()
 def _binary_metrics(logits: Tensor, truth: Tensor, roots: Tensor, names: Iterable[str], settings: M03Settings) -> dict[str, Any]:
     names = tuple(names)
     report, macro = {}, []
@@ -1027,20 +1275,23 @@ def _binary_metrics(logits: Tensor, truth: Tensor, roots: Tensor, names: Iterabl
         score, target = logits[..., index].reshape(-1), target_shape.reshape(-1).bool()
         root = _expanded_roots(roots, target_shape)
         positive, negative = int(target.sum()), int((~target).sum())
-        if positive < settings.minimum_positive or negative < settings.minimum_negative:
-            report[name] = {"status": "insufficient_coverage", "positive": positive, "negative": negative}
+        positive_clusters, negative_clusters = len(root[target].unique()), len(root[~target].unique())
+        if (positive < settings.minimum_positive or negative < settings.minimum_negative
+                or positive_clusters < settings.minimum_positive or negative_clusters < settings.minimum_negative):
+            report[name] = {"status": "insufficient_coverage", "positive": positive, "negative": negative,
+                            "positive_seed_clusters": positive_clusters, "negative_seed_clusters": negative_clusters}
             continue
-        def auc(rows):
-            return binary_auc(score[rows], target[rows])
-        point, interval = _root_bootstrap(score, root, auc, draws=settings.bootstrap_draws, seed=settings.seed+index)
+        point, interval = _auc_bootstrap(score,target,root,draws=settings.bootstrap_draws,seed=settings.seed+index)
         report[name] = {"status": "measured" if interval is not None else "insufficient_coverage", "positive": positive,
-                        "negative": negative, "auc": point, "interval": interval}
+                        "negative": negative, "positive_seed_clusters": positive_clusters, "negative_seed_clusters": negative_clusters,
+                        "auc": point, "interval": interval}
         if point is not None:
             macro.append(point)
     return {"targets": report, "macro_auc": float(np.mean(macro)) if macro else None,
             "supported_targets": len(macro), "total_targets": len(names)}
 
 
+@memoized()
 def _regression_metrics(prediction: Tensor, truth: Tensor, roots: Tensor, names: Iterable[str], settings: M03Settings) -> dict[str, Any]:
     names = tuple(names)
     report, values = {}, []
@@ -1052,11 +1303,7 @@ def _regression_metrics(prediction: Tensor, truth: Tensor, roots: Tensor, names:
             continue
         denominator = ((target-target.mean()).square().sum()).clamp_min(1e-12)
         r2 = float(1 - (predicted-target).square().sum()/denominator)
-        def score(rows):
-            selected = target[rows]
-            denom = ((selected-selected.mean()).square().sum()).clamp_min(1e-12)
-            return float(1 - (predicted[rows]-selected).square().sum()/denom)
-        _, interval = _root_bootstrap(predicted, roots, score, draws=settings.bootstrap_draws, seed=settings.seed+400+index)
+        _, interval = _regression_bootstrap(target,predicted,roots,draws=settings.bootstrap_draws,seed=settings.seed+400+index)
         report[name] = {"r2": r2, "interval": interval, "mae": float((predicted-target).abs().mean()),
                         "variance": total_variance,
                         "status": "measured" if interval is not None else "insufficient_coverage"}
@@ -1066,6 +1313,7 @@ def _regression_metrics(prediction: Tensor, truth: Tensor, roots: Tensor, names:
             "supported_targets": len(values), "total_targets": len(names)}
 
 
+@memoized()
 def _paired_binary_difference(left_logits: Tensor, right_logits: Tensor, truth: Tensor, roots: Tensor,
                               names: Iterable[str], settings: M03Settings) -> dict[str, Any]:
     """Paired root-bootstrap AUC(left) - AUC(right), with common fork rows."""
@@ -1078,16 +1326,14 @@ def _paired_binary_difference(left_logits: Tensor, right_logits: Tensor, truth: 
                                target_shape.reshape(-1).bool())
         root = _expanded_roots(roots, target_shape)
         positive, negative = int(target.sum()), int((~target).sum())
-        if positive < settings.minimum_positive or negative < settings.minimum_negative:
-            report[name] = {"status": "insufficient_coverage", "positive": positive, "negative": negative}
+        positive_clusters, negative_clusters = len(root[target].unique()), len(root[~target].unique())
+        if (positive < settings.minimum_positive or negative < settings.minimum_negative
+                or positive_clusters < settings.minimum_positive or negative_clusters < settings.minimum_negative):
+            report[name] = {"status": "insufficient_coverage", "positive": positive, "negative": negative,
+                            "positive_seed_clusters": positive_clusters, "negative_seed_clusters": negative_clusters}
             continue
 
-        def difference(rows: Tensor):
-            left_auc, right_auc = binary_auc(left[rows], target[rows]), binary_auc(right[rows], target[rows])
-            return None if left_auc is None or right_auc is None else left_auc - right_auc
-
-        point, interval = _root_bootstrap(left, root, difference, draws=settings.bootstrap_draws,
-                                          seed=settings.seed + 2000 + index)
+        point, interval = _auc_bootstrap(left,target,root,right=right,draws=settings.bootstrap_draws,seed=settings.seed+2000+index)
         report[name] = {"status": "measured" if interval is not None else "insufficient_coverage",
                         "positive": positive, "negative": negative, "auc_difference": point, "interval": interval}
         if interval is not None and point is not None:
@@ -1096,6 +1342,7 @@ def _paired_binary_difference(left_logits: Tensor, right_logits: Tensor, truth: 
             "supported_targets": len(macro), "total_targets": len(names), "direction": "left_minus_right"}
 
 
+@memoized()
 def _paired_regression_difference(left: Tensor, right: Tensor, truth: Tensor, roots: Tensor,
                                   names: Iterable[str], settings: M03Settings) -> dict[str, Any]:
     """Paired root-bootstrap R²(left) - R²(right) for successor scalar semantics."""
@@ -1109,19 +1356,7 @@ def _paired_regression_difference(left: Tensor, right: Tensor, truth: Tensor, ro
             report[name] = {"status": "insufficient_variation", "variance": variance}
             continue
 
-        def r2(prediction: Tensor, rows: Tensor) -> float | None:
-            selected = target[rows]
-            denominator = ((selected - selected.mean()).square().sum()).clamp_min(1e-12)
-            if float(denominator) <= 1e-12:
-                return None
-            return float(1 - (prediction[rows] - selected).square().sum() / denominator)
-
-        def difference(rows: Tensor):
-            left_r2, right_r2 = r2(left_pred, rows), r2(right_pred, rows)
-            return None if left_r2 is None or right_r2 is None else left_r2 - right_r2
-
-        point, interval = _root_bootstrap(left_pred, roots, difference, draws=settings.bootstrap_draws,
-                                          seed=settings.seed + 2100 + index)
+        point, interval = _regression_bootstrap(target,left_pred,roots,right=right_pred,draws=settings.bootstrap_draws,seed=settings.seed+2100+index)
         report[name] = {"status": "measured" if interval is not None else "insufficient_coverage",
                         "variance": variance, "r2_difference": point, "interval": interval}
         if interval is not None and point is not None:
@@ -1130,11 +1365,25 @@ def _paired_regression_difference(left: Tensor, right: Tensor, truth: Tensor, ro
             "supported_targets": len(macro), "total_targets": len(names), "direction": "left_minus_right"}
 
 
+def _fit_label_coverage(truth: Tensor, roots: Tensor, names, settings: M03Settings) -> dict:
+    result = {}
+    for i, name in enumerate(names):
+        target = truth[..., i].bool()
+        expanded = _expanded_roots(roots, target)
+        flat = target.flatten()
+        pos, neg = len(expanded[flat].unique()), len(expanded[~flat].unique())
+        result[name] = {"positive_seed_clusters": pos, "negative_seed_clusters": neg,
+                        "status": "adequate" if pos >= settings.minimum_positive and neg >= settings.minimum_negative
+                        else "insufficient_coverage"}
+    return result
+
+
 def _static_report(train: dict[str, Tensor], dev: dict[str, Tensor], features: dict[str, dict[str, Tensor]],
                    settings: M03Settings, *, device: str) -> dict[str, Any]:
     """Fit identical static probes for every representation without DEV selection."""
 
-    output: dict[str, Any] = {"continuous_names": STATIC_CONTINUOUS, "binary_names": STATIC_BINARY, "sources": {}}
+    output: dict[str, Any] = {"continuous_names": STATIC_CONTINUOUS, "binary_names": STATIC_BINARY, "sources": {},
+        "fit_coverage": _fit_label_coverage(train["root_binary"], train["episode"], STATIC_BINARY, settings)}
     train_binary, dev_binary = train["root_binary"].float().to(device), dev["root_binary"].bool()
     train_cont, dev_cont = train["root_continuous"].float().to(device), dev["root_continuous"].float()
     roots = dev["episode"]
@@ -1166,6 +1415,7 @@ def _one_hot_actions(count: int, *, device: str) -> Tensor:
     return torch.eye(17, device=device).repeat(count, 1)
 
 
+@memoized()
 def _choice_summary(logits: Tensor, truth: Tensor, roots: Tensor, index: int, *, minimize: bool,
                     settings: M03Settings) -> dict[str, Any]:
     """Does a generated all-action ranking select the safer/better actual fork?"""
@@ -1198,6 +1448,7 @@ def _choice_summary(logits: Tensor, truth: Tensor, roots: Tensor, index: int, *,
             "status": "measured" if interval is not None else "insufficient_coverage"}
 
 
+@memoized()
 def _equivalence_summary(logits: Tensor, truth: Tensor, roots: Tensor, settings: M03Settings) -> dict[str, Any]:
     """Check that predicted action effects separate actually distinct outcomes."""
 
@@ -1218,6 +1469,7 @@ def _equivalence_summary(logits: Tensor, truth: Tensor, roots: Tensor, settings:
             "status": "measured" if interval is not None else "insufficient_coverage"}
 
 
+@memoized()
 def _mode_summary(logits: Tensor, truth: Tensor, modes: Tensor, roots: Tensor, settings: M03Settings) -> dict[str, Any]:
     """A deterministic discriminative score may be nearer to one valid outcome mode.
 
@@ -1246,6 +1498,7 @@ def _mode_summary(logits: Tensor, truth: Tensor, modes: Tensor, roots: Tensor, s
             "status": "advisory_only_deterministic_model"}
 
 
+@memoized()
 def _context_summary(generated: Tensor, reset: Tensor, truth: Tensor) -> dict[str, Any]:
     """Measure whether a four-frame prefix materially changes all-action predictions."""
 
@@ -1304,7 +1557,9 @@ def _outcome_report(train: dict[str, Tensor], dev: dict[str, Tensor], features: 
     """All-action consequence and rich successor-semantic transfer, fitted on TRAIN only."""
 
     output: dict[str, Any] = {"outcome_names": OUTCOME_BINARY, "successor_continuous_names": STATIC_CONTINUOUS,
-                              "successor_binary_names": STATIC_BINARY, "arms": {}}
+                              "successor_binary_names": STATIC_BINARY, "arms": {},
+                              "fit_coverage": _fit_label_coverage(train["outcomes"], train["episode"], OUTCOME_BINARY, settings),
+                              "successor_fit_coverage": _fit_label_coverage(train["next_binary"], train["episode"], STATIC_BINARY, settings)}
     train_truth, dev_truth = train["outcomes"].reshape(-1, len(OUTCOME_BINARY)).float().to(device), dev["outcomes"]
     root = dev["episode"]
     fork_roots = _expanded_roots(root, dev_truth[..., 0])
@@ -1418,6 +1673,12 @@ def _critical_coverage(static: dict[str, Any], outcomes: dict[str, Any]) -> dict
     """Coverage is a gate condition, not a footnote beneath a macro average."""
 
     missing: list[str] = []
+    for scope, coverage in (("static_fit", static.get("fit_coverage", {})),
+                            ("outcome_fit", outcomes.get("fit_coverage", {})),
+                            ("successor_fit", outcomes.get("successor_fit_coverage", {}))):
+        for name, entry in coverage.items():
+            if entry["status"] != "adequate":
+                missing.append(f"{scope}:{name}")
     for source in ("raw_projected", "tc_projected"):
         for family in ("linear", "mlp"):
             branch = static["sources"].get(source, {}).get(family, {})
@@ -1467,7 +1728,7 @@ def _decision(static: dict[str, Any], outcomes: dict[str, Any], sidecar: dict[st
 
 def run_gate(*, raw_checkpoint: Path, tc_checkpoint: Path, dataset: Path, output: Path,
              settings: M03Settings, device: str, include_direct: bool = True,
-             structural_smoke: bool = False) -> dict[str, Any]:
+             structural_smoke: bool = False, include_history: bool = True) -> dict[str, Any]:
     """Run or safely resume one complete M03 report for immutable declared inputs."""
 
     if device != "cuda" and not structural_smoke:
@@ -1479,7 +1740,7 @@ def run_gate(*, raw_checkpoint: Path, tc_checkpoint: Path, dataset: Path, output
     output = Path(output)
     contract = _run_contract(raw_checkpoint=raw_checkpoint, tc_checkpoint=tc_checkpoint, dataset=dataset,
                              settings=settings, device=device, include_direct=include_direct,
-                             structural_smoke=structural_smoke)
+                             structural_smoke=structural_smoke, include_history=include_history)
     contract_sha256 = _open_run(output, contract)
     report_path = output / "report.json"
     if report_path.exists():
@@ -1511,7 +1772,7 @@ def run_gate(*, raw_checkpoint: Path, tc_checkpoint: Path, dataset: Path, output
             feature_rows.setdefault(variant, {})[split] = features
             feature_manifests[f"{variant}:{split}"] = manifest_sha256
             _write_status(output, "encoding", arm=variant, split=split, sidecar_sha256=sidecar_sha256)
-        del bundle
+        del bundle, payload
         if device == "cuda":
             torch.cuda.empty_cache()
 
@@ -1588,6 +1849,23 @@ def run_gate(*, raw_checkpoint: Path, tc_checkpoint: Path, dataset: Path, output
         output, "all_action_one_step", outcome_metadata,
         lambda: _outcome_report(sidecar["splits"]["train"], sidecar["splits"]["dev"], outcome_features, settings, device=device))
     _write_status(output, "all_action_one_step_ready", sidecar_sha256=sidecar_sha256)
+    from .diagnostics import eda_report
+    eda = _load_or_compute_stage(output, "corrected_eda", outcome_metadata,
+        lambda: eda_report(sidecar["splits"]["train"], sidecar["splits"]["dev"], outcome_features, settings, device=device))
+    from .diagnostics import observability_report
+    observability = _load_or_compute_stage(output, "observability", outcome_metadata,
+        lambda: observability_report(sidecar["splits"]["train"], sidecar["splits"]["dev"], settings, device=device))
+    # Release primary payloads before the larger historical panels.
+    dataset_sha256 = sidecar["dataset_sha256"]
+    del feature_rows, outcome_features, static_features
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    historical = {"status": "not_requested", "m4_authorized": False}
+    if include_history:
+        from .history import run_history
+        historical = run_history(output, settings, root=ROOT,
+            checkpoints={"raw": raw_checkpoint, "tc": tc_checkpoint}, dataset_sha256=dataset_sha256,
+            device=device, include_direct=include_direct, smoke=structural_smoke)
     advisory = _advisory_summary(outcomes)
     report = {
         "schema": SCHEMA, "run_contract_sha256": contract_sha256, "settings": asdict(settings), "parents": parents,
@@ -1595,9 +1873,11 @@ def run_gate(*, raw_checkpoint: Path, tc_checkpoint: Path, dataset: Path, output
                       "direct_anchors_included": include_direct},
         "sidecar": sidecar_manifest,
         "native_direct_parity": direct_native_preflights,
-        "static_retention": static, "all_action_one_step": outcomes, "advisory": advisory,
+        "static_retention": static, "all_action_one_step": outcomes, "corrected_eda": eda,
+        "historical_regression": historical, "observability": observability, "advisory": advisory,
         "decision": _decision(static, outcomes, sidecar, structural_smoke=structural_smoke),
     }
+    report["decision"]["suite_complete"] = include_history and include_direct and not structural_smoke
     _atomic_json_save(report_path, report)
     _write_status(output, "complete", sidecar_sha256=sidecar_sha256, report_sha256=_sha256(report_path))
     return report
@@ -1609,31 +1889,152 @@ def _settings_for_smoke(settings: M03Settings) -> M03Settings:
                    minimum_positive=1, minimum_negative=1)
 
 
+def resume_archived_baseline(output, *, validate_only=False):
+    """Resume the exact retired evaluator; archive bytes must match run.json.
+
+    Module names and __file__ retain their original values for contract identity.
+    Only reads of retired gate source paths resolve through the checked archive;
+    every other source, setting, input and cache check runs unchanged.
+    """
+    import sys
+    import types
+    import zipfile
+    output = Path(output).resolve()
+    stored = json.loads((output / "run.json").read_text())
+    contract = stored['contract']
+    if stored['contract_sha256'] != _sha(contract):
+        raise ValueError('m03_archive: invalid baseline contract')
+    expected = {}
+    def collect(value):
+        if isinstance(value, dict):
+            if 'path' in value and 'sha256' in value: expected[value['path']] = value['sha256']
+            for v in value.values(): collect(v)
+        elif isinstance(value, list):
+            for v in value: collect(v)
+    collect(contract)
+    names = ('capability', 'diagnostics', 'observability', 'history')
+    with zipfile.ZipFile(output / 'source.zip') as archive:
+        sources = {str(ROOT / f'd4mj/m03_{name}.py'): archive.read(f'd4mj/m03_{name}.py') for name in names}
+    for path, content in sources.items():
+        if sha256(content).hexdigest() != expected.get(path):
+            raise ValueError(f'm03_archive: evaluator bytes differ from original contract: {path}')
+    saved, modules = {}, {}
+    try:
+        for name in names:
+            key = 'd4mj.m03_' + name
+            saved[key] = sys.modules.get(key)
+            module = types.ModuleType(key)
+            module.__file__ = str(ROOT / f'd4mj/m03_{name}.py')
+            module.__package__ = 'd4mj'
+            sys.modules[key] = modules[name] = module
+        for module in modules.values():
+            exec(compile(sources[module.__file__], module.__file__, 'exec'), module.__dict__)
+        original = modules['capability']
+        identity = original._input_identity
+        def archived_identity(path):
+            path = str(Path(path).resolve())
+            return {'path': path, 'sha256': sha256(sources[path]).hexdigest()} if path in sources else identity(Path(path))
+        original._input_identity = archived_identity
+        settings = original.M03Settings(**contract['settings'])
+        kwargs = dict(raw_checkpoint=Path(contract['raw_checkpoint']['path']), tc_checkpoint=Path(contract['tc_checkpoint']['path']),
+                      dataset=Path(contract['dataset']['path']), settings=settings, device=contract['execution']['device'],
+                      include_direct=contract['execution']['direct_anchors_included'],
+                      structural_smoke=contract['execution']['structural_smoke'], include_history=contract['historical_panels_included'])
+        actual = original._run_contract(**kwargs)
+        if actual != contract:
+            raise ValueError('m03_archive: live inputs differ from archived run; resume refused')
+        if validate_only:
+            return {'status': 'pass', 'contract_sha256': stored['contract_sha256']}
+        return original.run_gate(output=output, **kwargs)
+    finally:
+        for key, module in saved.items():
+            if module is None: sys.modules.pop(key, None)
+            else: sys.modules[key] = module
+
+
 def main(argv=None) -> int:
+    started = (time.perf_counter(),time.process_time(),time.time())
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--raw-checkpoint", type=Path, default=ROOT / "artifacts/lewm_gates_20260906/paired/raw/joint/step-010000.pt")
-    parser.add_argument("--tc-checkpoint", type=Path, default=ROOT / "artifacts/lewm_gates_20260906/paired/tc/joint/step-010000.pt")
+    parser.add_argument("--raw-checkpoint", type=Path)
+    parser.add_argument("--tc-checkpoint", type=Path)
     parser.add_argument("--dataset", type=Path, default=ROOT / "artifacts/craftax_support_v2/manifest.json")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--skip-direct", action="store_true", help="debug-only; output cannot be a full historical-anchor gate")
+    parser.add_argument("--skip-history", action="store_true", help="partial diagnostic only; omits historical regression panels")
     parser.add_argument("--smoke", action="store_true", help="tiny structural fixture, never a research result")
+    parser.add_argument("--baseline", type=Path, help="add the Mamba supplement to an existing sealed gate")
+    parser.add_argument("--resume-baseline", action="store_true", help="finish --baseline using its hash-checked source.zip first")
+    parser.add_argument("--cache", type=Path, default=ROOT / "artifacts/lewm_gates_20260906/cache.sqlite3")
+    parser.add_argument("--reuse-from", type=Path, help="adopt verified compatible artifacts from a retired gate")
+    parser.add_argument("--memory-first", action="store_true", help="score Mamba using --reuse-from replay before remaining baseline work")
+    parser.add_argument("--cache-compatibility", type=Path, help="hash-checked numerical-equivalence proof for prior statistics")
     args = parser.parse_args(argv)
+    if args.memory_first and (args.reuse_from is None or args.baseline is not None):
+        parser.error('--memory-first requires --reuse-from and cannot combine with --baseline')
+    if args.resume_baseline and args.baseline is None:
+        parser.error('--resume-baseline requires --baseline')
     settings = _settings_for_smoke(M03Settings()) if args.smoke else M03Settings()
+    from .cache import ArtifactCache, prepare_imports, use_cache
+    from .history import run_memory
+    cache = None
     try:
-        report = run_gate(raw_checkpoint=args.raw_checkpoint, tc_checkpoint=args.tc_checkpoint,
-                          dataset=args.dataset, output=args.out, settings=settings, device=args.device,
-                          include_direct=not args.skip_direct, structural_smoke=args.smoke)
-        print(json.dumps({"status": "complete", "report": str((args.out / "report.json").resolve()),
-                          "m03_capability": report["decision"]["m03_capability"], "m4_authorized": False}))
+        parent = json.loads((args.baseline/'run.json').read_text())['contract'] if args.baseline else None
+        checkpoints = {a: getattr(args,a+'_checkpoint') or
+                       (Path(parent[a+'_checkpoint']['path']) if parent else
+                        ROOT / f'artifacts/lewm_gates_20260906/paired/{a}/joint/step-010000.pt')
+                       for a in ('raw','tc')}
+        imports = prepare_imports(args.reuse_from, root=ROOT, settings=settings, dataset=args.dataset,
+                                  raw_checkpoint=checkpoints['raw'],tc_checkpoint=checkpoints['tc'],compatibility=args.cache_compatibility) if args.reuse_from else {}
+        cache = ArtifactCache(args.cache,imports=imports,settings=settings,device=args.device,
+                              compatibility=args.cache_compatibility,timing_path=args.out/"timing.json")
+        cache.started,cache.cpu_started,cache.started_unix = started
+        with use_cache(cache):
+            if args.baseline is not None:
+                if args.resume_baseline:
+                    resume_archived_baseline(args.baseline)
+                report = run_memory(args.baseline,args.out,settings,device=args.device,smoke=args.smoke,
+                                    allow_incomplete=True,checkpoints=checkpoints)
+                report_path = args.out/'report.json'
+            else:
+                kwargs = dict(raw_checkpoint=checkpoints['raw'],tc_checkpoint=checkpoints['tc'],
+                              dataset=args.dataset,settings=settings,device=args.device,
+                              include_direct=not args.skip_direct,structural_smoke=args.smoke,include_history=not args.skip_history)
+                _open_run(args.out,_run_contract(**kwargs))
+                if args.memory_first:
+                    _write_status(args.out,'memory_first',baseline_scoring='queued')
+                    report = run_memory(args.reuse_from,args.out/'memory',settings,device=args.device,
+                                        smoke=args.smoke,allow_incomplete=True,checkpoints=checkpoints)
+                baseline_report = run_gate(output=args.out,**kwargs)
+                if not args.memory_first:
+                    report = run_memory(args.out,args.out/'memory',settings,device=args.device,
+                                        smoke=args.smoke,checkpoints=checkpoints)
+                report_path = args.out/'complete.json'
+                combined = {'baseline':_input_identity(args.out/'report.json'),
+                    'memory':_input_identity(args.out/'memory/report.json'),
+                    'decision':dict(report['decision'],suite_complete=bool(not args.smoke and
+                        baseline_report['decision']['suite_complete'] and len(report['panels']) == 5))}
+                if report_path.exists():
+                    if json.loads(report_path.read_text()) != combined:
+                        raise ValueError('m03_resume: combined report differs from its inputs')
+                else: _atomic_json_save(report_path,combined)
+            print(json.dumps({"status":"complete","report":str(report_path.resolve()),
+                              "m03_capability":report['decision'].get('status','measured'),"m4_authorized":False}))
         return 0
     except Exception as error:
         if args.out.exists():
-            atomic_manifest(args.out / "failure.json", {"schema": SCHEMA, "status": "stopped", "reason": str(error),
-                                                         "m4_authorized": False})
-        print(json.dumps({"status": "stopped", "reason": str(error), "m4_authorized": False}))
+            atomic_manifest(args.out/'failure.json', {'schema':SCHEMA,'status':'stopped','reason':str(error),'m4_authorized':False})
+            _write_status(args.out,'stopped',reason=str(error))
+        import traceback
+        traceback.print_exc()
+        print(json.dumps({'status':'stopped','reason':str(error),'m4_authorized':False}))
         return 1
+    finally:
+        if cache is not None:
+            if args.out.exists(): atomic_manifest(args.out/'cache_usage.json',dict(cache.counts))
+            cache.close()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from d4mj.m03.gate import main as canonical_main
+    raise SystemExit(canonical_main())
